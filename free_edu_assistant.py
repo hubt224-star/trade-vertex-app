@@ -786,9 +786,25 @@ else:
 
         if len(formatted_num) >= 10:
             tel_url = f"tel:+{formatted_num}"
-            st.link_button(f"📞 Open Dialer ({display_num})", tel_url, use_container_width=True)
+            st.markdown(
+                f"""
+                <a href="{tel_url}" target="_top" style="
+                    display: inline-block;
+                    width: 100%;
+                    text-align: center;
+                    background-color: #16a34a;
+                    color: #ffffff;
+                    font-weight: 600;
+                    padding: 0.6rem 1rem;
+                    border-radius: 0.5rem;
+                    text-decoration: none;
+                    margin-top: 0.25rem;
+                ">📞 Call Now ({display_num})</a>
+                """,
+                unsafe_allow_html=True,
+            )
         else:
-            st.caption("Enter a phone number to enable the dialer button.")
+            st.caption("Enter a 10-digit phone number to enable the Call Now button.")
 
     st.divider()
     st.subheader("📊 4. Disposition Sheet")
