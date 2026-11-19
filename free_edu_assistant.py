@@ -14,8 +14,9 @@ st.title("📚 Trade Vertex — Smart Lead Classifier, Calling & WA Helper")
 st.caption("Leads assign/paste karo, call & WhatsApp karo, disposition save karo, aur 5on callers ka live status track karo.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
+AUTH_CONFIG_FILE = "trade_vertex_auth_config.json"
 
-CALLER_AUTH_MAP = {
+DEFAULT_CALLER_AUTH_MAP = {
     "Caller 1": {"id": "TV-C1", "pin": "1101"},
     "Caller 2": {"id": "TV-C2", "pin": "1102"},
     "Caller 3": {"id": "TV-C3", "pin": "1103"},
@@ -51,6 +52,34 @@ def safe_caller_slug(caller_name: str) -> str:
 
 def get_backup_file(caller_name: str) -> str:
     return f"trade_vertex_backup_{safe_caller_slug(caller_name)}.json"
+
+
+def load_auth_config() -> dict:
+    merged = {k: dict(v) for k, v in DEFAULT_CALLER_AUTH_MAP.items()}
+    if not os.path.exists(AUTH_CONFIG_FILE):
+        return merged
+    try:
+        with open(AUTH_CONFIG_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        for slot, creds in DEFAULT_CALLER_AUTH_MAP.items():
+            if isinstance(saved.get(slot), dict):
+                cid = str(saved[slot].get("id", creds["id"])).strip().upper()
+                cpin = str(saved[slot].get("pin", creds["pin"])).strip()
+                merged[slot] = {
+                    "id": cid or creds["id"],
+                    "pin": cpin or creds["pin"],
+                }
+    except Exception:
+        pass
+    return merged
+
+
+def save_auth_config(auth_map: dict):
+    try:
+        with open(AUTH_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(auth_map, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def parse_leads_text(raw_text: str):
@@ -268,17 +297,22 @@ def load_caller_backup(caller_name: str):
         return None
 
 
+if "caller_auth_map" not in st.session_state:
+    st.session_state.caller_auth_map = load_auth_config()
+
 if "verified_profiles" not in st.session_state:
     st.session_state.verified_profiles = {}
 
-# Sidebar: Caller Login, Class Settings, Sheet Sync & Admin Lead Assignment
+caller_auth_map = st.session_state.caller_auth_map
+
+# Sidebar: Caller Login, Class Settings, Sheet Sync, Caller ID/PIN Creator & Lead Assignment
 with st.sidebar:
     st.header("1. Caller Login & Class Settings")
     brand_name = st.text_input("Brand Name", value="Trade Vertex")
 
     selected_preset = st.selectbox(
         "Caller Slot",
-        list(CALLER_AUTH_MAP.keys()),
+        list(caller_auth_map.keys()),
         index=0,
     )
     entered_caller_id = st.text_input(
@@ -293,10 +327,10 @@ with st.sidebar:
         key=f"cpin_input_{selected_preset}",
     )
 
-    expected_auth = CALLER_AUTH_MAP[selected_preset]
+    expected_auth = caller_auth_map[selected_preset]
     is_caller_verified = (
-        entered_caller_id.strip().upper() == expected_auth["id"]
-        and entered_caller_pin.strip() == expected_auth["pin"]
+        entered_caller_id.strip().upper() == expected_auth["id"].strip().upper()
+        and entered_caller_pin.strip() == expected_auth["pin"].strip()
     )
 
     topic = st.selectbox(
@@ -321,49 +355,83 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("3. Admin: 5on Callers Ko Leads Do")
+    st.header("3. Admin Control (ID/PIN & Leads)")
     admin_pin_input = st.text_input("Admin PIN", type="password", placeholder="Admin PIN", key="admin_pin_box")
     is_admin_verified = admin_pin_input.strip() == ADMIN_PIN
 
     if is_admin_verified:
-        st.success("Admin Unlocked: Kisi bhi caller ko alag leads assign karo.")
-        admin_target_caller = st.selectbox(
-            "Target Caller Chuno",
-            list(CALLER_AUTH_MAP.keys()),
-            key="admin_target_caller_select",
-        )
-        t_slug = safe_caller_slug(admin_target_caller)
-        if t_slug not in st.session_state.verified_profiles:
-            st.session_state.verified_profiles[t_slug] = (
-                load_caller_backup(admin_target_caller) or empty_profile("")
-            )
-        t_profile = st.session_state.verified_profiles[t_slug]
+        st.success("Admin Unlocked: Dashboard se hi ID/PIN banao aur leads assign karo.")
 
-        admin_uploaded = st.file_uploader(
-            f"{admin_target_caller} ke liye CSV / TXT Upload",
-            type=["csv", "txt"],
-            key=f"admin_upload_{t_slug}",
-        )
-        if admin_uploaded is not None:
-            parsed_up = parse_uploaded_leads_file(admin_uploaded)
-            if parsed_up:
-                t_profile["raw_leads"] = parsed_up
+        with st.expander("🔑 Caller ID & PIN Banao / Badlo", expanded=True):
+            manage_slot = st.selectbox(
+                "Kis Caller Ka ID/PIN Set Karna Hai?",
+                list(caller_auth_map.keys()),
+                key="manage_id_pin_slot",
+            )
+            curr_creds = caller_auth_map[manage_slot]
+            new_cid = st.text_input(
+                f"{manage_slot} Caller ID",
+                value=curr_creds["id"],
+                key=f"edit_cid_{manage_slot}",
+            )
+            new_cpin = st.text_input(
+                f"{manage_slot} PIN",
+                value=curr_creds["pin"],
+                key=f"edit_cpin_{manage_slot}",
+            )
+            if st.button(f"💾 Save {manage_slot} ID & PIN", use_container_width=True, key=f"save_creds_{manage_slot}"):
+                clean_id = new_cid.strip().upper() or curr_creds["id"]
+                clean_pin = new_cpin.strip() or curr_creds["pin"]
+                caller_auth_map[manage_slot] = {"id": clean_id, "pin": clean_pin}
+                save_auth_config(caller_auth_map)
+                st.success(f"{manage_slot} ka ID ({clean_id}) aur PIN save ho gaya!")
+                st.rerun()
+
+            st.caption("Current Active Caller IDs & PINs:")
+            creds_table = [
+                {"Slot": k, "Caller ID": v["id"], "PIN": v["pin"]}
+                for k, v in caller_auth_map.items()
+            ]
+            st.dataframe(creds_table, use_container_width=True, hide_index=True)
+
+        with st.expander("📥 5on Callers Ko Leads Assign Karo"):
+            admin_target_caller = st.selectbox(
+                "Target Caller Chuno",
+                list(caller_auth_map.keys()),
+                key="admin_target_caller_select",
+            )
+            t_slug = safe_caller_slug(admin_target_caller)
+            if t_slug not in st.session_state.verified_profiles:
+                st.session_state.verified_profiles[t_slug] = (
+                    load_caller_backup(admin_target_caller) or empty_profile("")
+                )
+            t_profile = st.session_state.verified_profiles[t_slug]
+
+            admin_uploaded = st.file_uploader(
+                f"{admin_target_caller} ke liye CSV / TXT Upload",
+                type=["csv", "txt"],
+                key=f"admin_upload_{t_slug}",
+            )
+            if admin_uploaded is not None:
+                parsed_up = parse_uploaded_leads_file(admin_uploaded)
+                if parsed_up:
+                    t_profile["raw_leads"] = parsed_up
+                    t_profile["lead_idx"] = 0
+                    save_caller_backup(admin_target_caller, t_profile)
+                    st.success(f"{admin_target_caller} ki uploaded file save ho gayi!")
+
+            admin_leads_text = st.text_area(
+                f"{admin_target_caller} ki Leads Paste Karo (Har line: Naam, Number)",
+                value=t_profile.get("raw_leads", ""),
+                height=130,
+                key=f"admin_paste_{t_slug}",
+            )
+            if st.button(f"Save {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
+                t_profile["raw_leads"] = admin_leads_text
                 t_profile["lead_idx"] = 0
                 save_caller_backup(admin_target_caller, t_profile)
-                st.success(f"{admin_target_caller} ki uploaded file save ho gayi!")
-
-        admin_leads_text = st.text_area(
-            f"{admin_target_caller} ki Leads Paste Karo (Har line: Naam, Number)",
-            value=t_profile.get("raw_leads", ""),
-            height=130,
-            key=f"admin_paste_{t_slug}",
-        )
-        if st.button(f"Save {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
-            t_profile["raw_leads"] = admin_leads_text
-            t_profile["lead_idx"] = 0
-            save_caller_backup(admin_target_caller, t_profile)
-            st.success(f"{admin_target_caller} ke liye leads save ho gayin!")
-            st.rerun()
+                st.success(f"{admin_target_caller} ke liye leads save ho gayin!")
+                st.rerun()
     elif admin_pin_input.strip():
         st.caption("Galat Admin PIN.")
 
@@ -740,7 +808,7 @@ if is_admin_verified:
     st.subheader("👀 5. Admin Live Team Monitor (5on Callers Kya Kar Rahe Hain)")
 
     local_team_rows = []
-    for c_name, auth_info in CALLER_AUTH_MAP.items():
+    for c_name, auth_info in caller_auth_map.items():
         c_slug = safe_caller_slug(c_name)
         prof = st.session_state.verified_profiles.get(c_slug) or load_caller_backup(c_name)
         if prof:
