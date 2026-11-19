@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 import io
 import json
 import os
@@ -8,20 +9,20 @@ import urllib.request
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Trade Vertex - Smart Calling & WA Helper", layout="wide")
+st.set_page_config(page_title="Smart Calling & WA Helper", layout="wide")
 
-st.title("📚 Trade Vertex — Smart Lead Classifier, Calling & WA Helper")
+st.title("📚 Smart Lead Classifier, Calling & WA Helper")
 st.caption("Assign or paste leads, manage calls & WhatsApp follow-ups, log dispositions, and track live caller progress.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
-AUTH_CONFIG_FILE = "trade_vertex_auth_config.json"
+AUTH_CONFIG_FILE = "caller_auth_config.json"
 
 DEFAULT_CALLER_AUTH_MAP = {
-    "Caller 1": {"id": "TV-C1", "pin": "1101"},
-    "Caller 2": {"id": "TV-C2", "pin": "1102"},
-    "Caller 3": {"id": "TV-C3", "pin": "1103"},
-    "Caller 4": {"id": "TV-C4", "pin": "1104"},
-    "Caller 5": {"id": "TV-C5", "pin": "1105"},
+    "Caller 1": {"id": "C1", "pin": "1101"},
+    "Caller 2": {"id": "C2", "pin": "1102"},
+    "Caller 3": {"id": "C3", "pin": "1103"},
+    "Caller 4": {"id": "C4", "pin": "1104"},
+    "Caller 5": {"id": "C5", "pin": "1105"},
 }
 
 DISPOSITION_OPTIONS = [
@@ -51,7 +52,13 @@ def safe_caller_slug(caller_name: str) -> str:
 
 
 def get_backup_file(caller_name: str) -> str:
-    return f"trade_vertex_backup_{safe_caller_slug(caller_name)}.json"
+    return f"caller_backup_{safe_caller_slug(caller_name)}.json"
+
+
+def build_sync_key(caller_label: str, lead_no: int, phone: str, name: str) -> str:
+    norm_phone = clean_phone(phone) or name.strip().lower()
+    raw_key = f"{caller_label.strip().lower()}|{int(lead_no)}|{norm_phone}"
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
 
 
 def load_auth_config() -> dict:
@@ -109,7 +116,27 @@ def parse_leads_text(raw_text: str):
             seen_phones.add(norm)
 
         leads.append({"name": name, "phone": phone})
-    return leads[:150]
+    return leads[:500]
+
+
+def split_leads_equally(raw_text: str, slots: list) -> dict:
+    parsed = parse_leads_text(raw_text)
+    num_slots = len(slots)
+    buckets = {s: [] for s in slots}
+    if not parsed or num_slots == 0:
+        return {s: "" for s in slots}
+
+    base_size, remainder = divmod(len(parsed), num_slots)
+    start = 0
+    for idx, slot in enumerate(slots):
+        extra = 1 if idx < remainder else 0
+        end = start + base_size + extra
+        chunk = parsed[start:end]
+        start = end
+        buckets[slot] = "\n".join(
+            f"{item['name']}, {item['phone']}".strip(", ") for item in chunk
+        )
+    return buckets
 
 
 def parse_uploaded_leads_file(uploaded_file) -> str:
@@ -228,7 +255,7 @@ def fetch_live_sheet_data(webhook_url: str):
 
 def build_csv(records):
     output = io.StringIO()
-    headers = ["Lead #", "Name", "Phone", "Disposition", "Reply / Note", "Caller"]
+    headers = ["Sync Key", "Lead #", "Name", "Phone", "Disposition", "Reply / Note", "Caller"]
     output.write(",".join(headers) + "\n")
 
     def esc(val):
@@ -237,6 +264,7 @@ def build_csv(records):
 
     for r in records:
         row = [
+            esc(r.get("sync_key", "")),
             esc(r.get("lead_no", "")),
             esc(r.get("name", "")),
             esc(r.get("phone", "")),
@@ -306,8 +334,8 @@ if "verified_profiles" not in st.session_state:
 caller_auth_map = st.session_state.caller_auth_map
 
 with st.sidebar:
-    st.header("1. Caller Login & Class Settings")
-    brand_name = st.text_input("Brand Name", value="Trade Vertex")
+    st.header("1. Caller Login & Session Settings")
+    brand_name = st.text_input("Team / Desk Name", value="Sales & Learning Desk")
 
     selected_preset = st.selectbox(
         "Caller Slot",
@@ -316,7 +344,7 @@ with st.sidebar:
     )
     entered_caller_id = st.text_input(
         "Enter Caller ID",
-        placeholder="Example: TV-C1",
+        placeholder="Example: C1",
         key=f"cid_input_{selected_preset}",
     )
     entered_caller_pin = st.text_input(
@@ -394,6 +422,31 @@ with st.sidebar:
             st.dataframe(creds_table, use_container_width=True, hide_index=True)
 
         with st.expander("5 Caller Lead Assign"):
+            bulk_raw_text = st.text_area(
+                "Bulk Split Leads Equally Across All 5 Callers (One per line: Name, Phone)",
+                placeholder="Paste 100 or 150 leads here to split equally across Caller 1 to Caller 5...",
+                height=110,
+                key="admin_bulk_split_box",
+            )
+            if st.button("✂️ Split & Assign Equally to 5 Callers", use_container_width=True, key="admin_split_btn"):
+                split_map = split_leads_equally(bulk_raw_text, list(caller_auth_map.keys()))
+                has_any = any(bool(v.strip()) for v in split_map.values())
+                if has_any:
+                    for slot_name, chunk_text in split_map.items():
+                        s_slug = safe_caller_slug(slot_name)
+                        if s_slug not in st.session_state.verified_profiles:
+                            st.session_state.verified_profiles[s_slug] = (
+                                load_caller_backup(slot_name) or empty_profile("")
+                            )
+                        st.session_state.verified_profiles[s_slug]["raw_leads"] = chunk_text
+                        st.session_state.verified_profiles[s_slug]["lead_idx"] = 0
+                        save_caller_backup(slot_name, st.session_state.verified_profiles[s_slug])
+                    st.success("Leads split equally across Caller 1 to Caller 5.")
+                    st.rerun()
+                else:
+                    st.warning("Paste valid leads first to split.")
+
+            st.divider()
             admin_target_caller = st.selectbox(
                 "Select Target Caller",
                 list(caller_auth_map.keys()),
@@ -471,7 +524,7 @@ else:
                 st.rerun()
 
         raw_leads = st.text_area(
-            "Up to 150 Leads (One per line: Name, Phone)",
+            "Assigned Leads (One per line: Name, Phone)",
             value=profile.get("raw_leads", ""),
             height=140,
             key=f"caller_batch_{current_slug}",
@@ -597,13 +650,15 @@ else:
     if next_clicked and total_leads > 0:
         idx_now = profile["lead_idx"]
         final_disp = disp_select if disp_select else (analysis["disposition"] if analysis else "Follow-Up")
+        caller_label = f"{caller_name} ({expected_auth['id']})"
         saved_record = {
+            "sync_key": build_sync_key(caller_label, idx_now + 1, lead_phone, lead_name),
             "lead_no": idx_now + 1,
             "name": lead_name,
             "phone": lead_phone,
             "disposition": final_disp,
             "note": lead_reply.strip(),
-            "caller": f"{caller_name} ({expected_auth['id']})",
+            "caller": caller_label,
         }
         profile["disposition_sheet"][idx_now] = saved_record
         profile["synced_indices"].discard(idx_now)
@@ -617,7 +672,7 @@ else:
 
         if auto_sync_sheet and gsheet_webhook.strip():
             live_info = {
-                "caller": f"{caller_name} ({expected_auth['id']})",
+                "caller": caller_label,
                 "current_lead": f"#{next_idx + 1} - {parsed_leads[next_idx]['name']}" if total_leads else lead_name,
                 "completed": f"{len(profile['done_indices'])}/{total_leads}",
                 "last_disposition": final_disp,
@@ -744,15 +799,20 @@ else:
 
         filter_disp = st.selectbox(
             "Filter Disposition",
-            ["All"] + DISPOSITION_OPTIONS,
+            ["All", "Due Follow-Ups"] + DISPOSITION_OPTIONS,
             key=f"filter_disp_select_{current_slug}",
         )
 
-        filtered_rows = (
-            sheet_rows
-            if filter_disp == "All"
-            else [r for r in sheet_rows if r["disposition"] == filter_disp]
-        )
+        if filter_disp == "All":
+            filtered_rows = sheet_rows
+        elif filter_disp == "Due Follow-Ups":
+            filtered_rows = [
+                r
+                for r in sheet_rows
+                if r["disposition"] in ["Follow-Up", "Doubt / Beginner", "Not Picked / Switched Off"]
+            ]
+        else:
+            filtered_rows = [r for r in sheet_rows if r["disposition"] == filter_disp]
 
         st.dataframe(filtered_rows, use_container_width=True, hide_index=True)
 
@@ -767,8 +827,9 @@ else:
                 disabled=not gsheet_webhook.strip() or not unsynced_rows,
                 key=f"sync_btn_{current_slug}",
             ):
+                caller_label = f"{caller_name} ({expected_auth['id']})"
                 live_info = {
-                    "caller": f"{caller_name} ({expected_auth['id']})",
+                    "caller": caller_label,
                     "current_lead": f"#{profile['lead_idx'] + 1} - {lead_name}",
                     "completed": f"{done_count}/{total_leads}",
                     "last_disposition": sheet_rows[-1]["disposition"],
@@ -792,7 +853,7 @@ else:
             st.download_button(
                 label="⬇️ Download Disposition Sheet (CSV)",
                 data=build_csv(sheet_rows),
-                file_name=f"trade_vertex_disposition_{current_slug}.csv",
+                file_name=f"disposition_{current_slug}.csv",
                 mime="text/csv",
                 use_container_width=True,
                 key=f"dl_btn_{current_slug}",
@@ -857,7 +918,7 @@ if is_admin_verified:
         st.download_button(
             label="⬇️ Download All Callers Sheet from Google Sheet (CSV)",
             data=remote_csv,
-            file_name="trade_vertex_all_callers_live.csv",
+            file_name="all_callers_live.csv",
             mime="text/csv",
             use_container_width=True,
             key="dl_all_callers_remote_csv",
