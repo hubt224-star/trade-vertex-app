@@ -53,6 +53,10 @@ def clean_phone(raw_phone: str) -> str:
     digits = re.sub(r"\D", "", raw_phone or "")
     if len(digits) == 11 and digits.startswith("0"):
         digits = digits[1:]
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    if len(digits) >= 10:
+        digits = digits[-10:]
     if len(digits) == 10:
         return "91" + digits
     return digits
@@ -105,22 +109,41 @@ def save_auth_config(auth_map: dict):
 def parse_leads_text(raw_text: str):
     leads = []
     seen_phones = set()
+    phone_pattern = re.compile(r"(?:\+?\d[\d\s\-().]{8,}\d)")
+
     for line in (raw_text or "").splitlines():
         line = line.strip()
         if not line:
             continue
 
-        parts = [p.strip() for p in re.split(r"[,|\t]+", line) if p.strip()]
-        if len(parts) >= 2:
-            name, phone = parts[0], parts[1]
+        low = line.lower()
+        if low in {"name, phone", "name,phone", "lead, phone", "lead,phone"}:
+            continue
+
+        found_phone = ""
+        found_digits = ""
+        for match in phone_pattern.finditer(line):
+            candidate = match.group(0).strip()
+            digits = re.sub(r"\D", "", candidate)
+            if len(digits) == 11 and digits.startswith("0"):
+                digits = digits[1:]
+            if len(digits) == 12 and digits.startswith("91"):
+                digits = digits[2:]
+            if len(digits) >= 10:
+                found_phone = candidate
+                found_digits = digits[-10:]
+                break
+
+        if found_phone:
+            name_part = line.replace(found_phone, " ")
+            name_part = re.sub(r"[,|\t:/\-]+", " ", name_part)
+            name_part = re.sub(r"\s+", " ", name_part).strip()
+            name = name_part if name_part and not name_part.isdigit() else "Lead"
+            phone = found_digits
         else:
-            digits_only = re.sub(r"\D", "", line)
-            if len(digits_only) >= 10:
-                name = "Lead"
-                phone = line
-            else:
-                name = line
-                phone = ""
+            parts = [p.strip() for p in re.split(r"[,|\t]+", line) if p.strip()]
+            name = parts[0] if parts else line
+            phone = parts[1] if len(parts) >= 2 else ""
 
         norm = clean_phone(phone)
         if norm and norm in seen_phones:
