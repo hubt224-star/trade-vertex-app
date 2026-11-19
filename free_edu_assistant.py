@@ -4,14 +4,13 @@ import os
 import re
 import urllib.parse
 import urllib.request
+from datetime import datetime
 import streamlit as st
 
 st.set_page_config(page_title="Trade Vertex - Smart Calling & WA Helper", layout="wide")
 
 st.title("📚 Trade Vertex — Smart Lead Classifier, Calling & WA Helper")
-st.caption("150 leads paste karo, disposition mark karo, aur seedha Google Sheet ya CSV mein bhejo.")
-
-BACKUP_FILE = "trade_vertex_backup.json"
+st.caption("Leads upload/paste karo, disposition mark karo, aur 5on callers ka live status Google Sheet mein track karo.")
 
 
 def clean_phone(raw_phone: str) -> str:
@@ -21,6 +20,16 @@ def clean_phone(raw_phone: str) -> str:
     if len(digits) == 10:
         return "91" + digits
     return digits
+
+
+def safe_caller_slug(caller_name: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", (caller_name or "team_member").strip().lower())
+    cleaned = cleaned.strip("_")
+    return cleaned or "team_member"
+
+
+def get_backup_file(caller_name: str) -> str:
+    return f"trade_vertex_backup_{safe_caller_slug(caller_name)}.json"
 
 
 def parse_leads_text(raw_text: str):
@@ -51,6 +60,23 @@ def parse_leads_text(raw_text: str):
 
         leads.append({"name": name, "phone": phone})
     return leads
+
+
+def parse_uploaded_leads_file(uploaded_file) -> str:
+    if uploaded_file is None:
+        return ""
+    raw_bytes = uploaded_file.getvalue()
+    text = raw_bytes.decode("utf-8-sig", errors="ignore")
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("name,") or low.startswith("lead"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def analyze_lead_reply(reply_text: str):
@@ -122,8 +148,11 @@ def analyze_lead_reply(reply_text: str):
     }
 
 
-def push_to_google_sheet(webhook_url: str, rows: list):
-    payload = json.dumps({"rows": rows}).encode("utf-8")
+def push_to_google_sheet(webhook_url: str, rows: list, live_activity: dict | None = None):
+    payload_obj = {"rows": rows}
+    if live_activity:
+        payload_obj["live_activity"] = live_activity
+    payload = json.dumps(payload_obj).encode("utf-8")
     req = urllib.request.Request(
         webhook_url.strip(),
         data=payload,
@@ -133,6 +162,16 @@ def push_to_google_sheet(webhook_url: str, rows: list):
     with urllib.request.urlopen(req, timeout=15) as resp:
         body = resp.read().decode("utf-8", errors="ignore")
         return resp.status, body
+
+
+def fetch_live_sheet_data(webhook_url: str):
+    url = webhook_url.strip()
+    sep = "&" if "?" in url else "?"
+    full_url = f"{url}{sep}action=live_view"
+    req = urllib.request.Request(full_url, method="GET")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = resp.read().decode("utf-8", errors="ignore")
+        return json.loads(body)
 
 
 def build_csv(records):
@@ -157,50 +196,47 @@ def build_csv(records):
     return output.getvalue().encode("utf-8-sig")
 
 
-def save_state_backup():
+def save_caller_backup(caller_name: str, state_obj: dict):
+    backup_path = get_backup_file(caller_name)
     try:
         data = {
-            "lead_idx": int(st.session_state.get("lead_idx", 0)),
-            "done_indices": sorted(int(i) for i in st.session_state.get("done_indices", set())),
-            "synced_indices": sorted(int(i) for i in st.session_state.get("synced_indices", set())),
+            "caller": caller_name,
+            "lead_idx": int(state_obj.get("lead_idx", 0)),
+            "done_indices": sorted(int(i) for i in state_obj.get("done_indices", set())),
+            "synced_indices": sorted(int(i) for i in state_obj.get("synced_indices", set())),
             "disposition_sheet": {
-                str(k): v for k, v in st.session_state.get("disposition_sheet", {}).items()
+                str(k): v for k, v in state_obj.get("disposition_sheet", {}).items()
             },
-            "raw_leads": st.session_state.get("persisted_raw_leads", ""),
+            "raw_leads": state_obj.get("raw_leads", ""),
         }
-        with open(BACKUP_FILE, "w", encoding="utf-8") as f:
+        with open(backup_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
 
-def load_state_backup():
-    if not os.path.exists(BACKUP_FILE):
+def load_caller_backup(caller_name: str):
+    backup_path = get_backup_file(caller_name)
+    if not os.path.exists(backup_path):
         return None
     try:
-        with open(BACKUP_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(backup_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return {
+            "lead_idx": int(raw.get("lead_idx", 0)),
+            "done_indices": {int(i) for i in raw.get("done_indices", [])},
+            "synced_indices": {int(i) for i in raw.get("synced_indices", [])},
+            "disposition_sheet": {
+                int(k): v for k, v in raw.get("disposition_sheet", {}).items()
+            },
+            "raw_leads": raw.get("raw_leads", ""),
+        }
     except Exception:
         return None
 
 
-if "state_loaded" not in st.session_state:
-    saved = load_state_backup()
-    if saved:
-        st.session_state.lead_idx = int(saved.get("lead_idx", 0))
-        st.session_state.done_indices = {int(i) for i in saved.get("done_indices", [])}
-        st.session_state.synced_indices = {int(i) for i in saved.get("synced_indices", [])}
-        st.session_state.disposition_sheet = {
-            int(k): v for k, v in saved.get("disposition_sheet", {}).items()
-        }
-        st.session_state.persisted_raw_leads = saved.get("raw_leads", "")
-    else:
-        st.session_state.lead_idx = 0
-        st.session_state.done_indices = set()
-        st.session_state.disposition_sheet = {}
-        st.session_state.synced_indices = set()
-        st.session_state.persisted_raw_leads = ""
-    st.session_state.state_loaded = True
+if "caller_profiles" not in st.session_state:
+    st.session_state.caller_profiles = {}
 
 disposition_options = [
     "Interested",
@@ -213,7 +249,11 @@ disposition_options = [
 with st.sidebar:
     st.header("1. Class & Brand Settings")
     brand_name = st.text_input("Brand Name", value="Trade Vertex")
-    caller_name = st.text_input("Employee / Caller Name", value="Team Member")
+    caller_name = st.text_input(
+        "Employee / Caller Name",
+        value="Team Member",
+        help="Har employee apna alag naam likhe taaki sabka progress alag track ho.",
+    )
     topic = st.selectbox(
         "Topic / Focus",
         [
@@ -231,32 +271,59 @@ with st.sidebar:
         placeholder="https://script.google.com/macros/s/.../exec",
     )
     auto_sync_sheet = st.checkbox(
-        "Save & Next par auto Google Sheet sync",
-        value=False,
-        help="URL daala ho toh har save ke saath nayi row Google Sheet mein bhi bhej dega.",
+        "Save & Next par auto Google Sheet sync + live activity",
+        value=True,
     )
 
+current_slug = safe_caller_slug(caller_name)
+
+if current_slug not in st.session_state.caller_profiles:
+    loaded = load_caller_backup(caller_name)
+    st.session_state.caller_profiles[current_slug] = loaded or {
+        "lead_idx": 0,
+        "done_indices": set(),
+        "synced_indices": set(),
+        "disposition_sheet": {},
+        "raw_leads": "",
+    }
+
+profile = st.session_state.caller_profiles[current_slug]
+default_leads = "Rahul, 9876543210\nAmit, 9123456789\nPriya, 9988776655"
+initial_leads_text = profile["raw_leads"] or default_leads
+
+with st.sidebar:
     st.divider()
-    st.header("3. Batch Leads (Up to 150+)")
-    default_leads = "Rahul, 9876543210\nAmit, 9123456789\nPriya, 9988776655"
-    initial_leads_text = st.session_state.persisted_raw_leads or default_leads
-    raw_leads = st.text_area(
-        "150 tak leads paste karo (Har line: Naam, Number)",
-        value=initial_leads_text,
-        height=160,
-        help="Ek saath 150 lines paste kar sakte ho. Duplicate numbers apne aap skip ho jayenge.",
+    st.header("3. Upload / Paste Leads")
+    uploaded_leads = st.file_uploader(
+        "Phone / Device se Leads File Upload Karo (CSV / TXT)",
+        type=["csv", "txt"],
+        key=f"upload_leads_{current_slug}",
     )
-    if raw_leads != st.session_state.persisted_raw_leads:
-        st.session_state.persisted_raw_leads = raw_leads
-        save_state_backup()
+    if uploaded_leads is not None:
+        extracted_text = parse_uploaded_leads_file(uploaded_leads)
+        if extracted_text and extracted_text != profile["raw_leads"]:
+            profile["raw_leads"] = extracted_text
+            profile["lead_idx"] = 0
+            save_caller_backup(caller_name, profile)
+            st.rerun()
+
+    raw_leads = st.text_area(
+        "Ya 150 tak leads paste karo (Har line: Naam, Number)",
+        value=profile["raw_leads"] or initial_leads_text,
+        height=150,
+        key=f"batch_area_{current_slug}",
+    )
+    if raw_leads != profile["raw_leads"]:
+        profile["raw_leads"] = raw_leads
+        save_caller_backup(caller_name, profile)
 
 parsed_leads = parse_leads_text(raw_leads)
 total_leads = len(parsed_leads)
 
 if total_leads > 0:
-    if st.session_state.lead_idx >= total_leads:
-        st.session_state.lead_idx = total_leads - 1
-    current_lead = parsed_leads[st.session_state.lead_idx]
+    if profile["lead_idx"] >= total_leads:
+        profile["lead_idx"] = total_leads - 1
+    current_lead = parsed_leads[profile["lead_idx"]]
     default_name = current_lead["name"]
     default_phone = current_lead["phone"]
 else:
@@ -264,24 +331,28 @@ else:
     default_name = "Rahul"
     default_phone = ""
 
+done_count = len([i for i in profile["done_indices"] if i < total_leads]) if total_leads > 0 else 0
+
 if total_leads > 0:
-    done_count = len([i for i in st.session_state.done_indices if i < total_leads])
-    st.progress(done_count / total_leads, text=f"Completed: {done_count} / {total_leads} leads | Current: #{st.session_state.lead_idx + 1}")
+    st.progress(
+        done_count / total_leads,
+        text=f"[{caller_name}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1}",
+    )
 
 q_col1, q_col2, q_col3, q_col4, q_col5 = st.columns([2.4, 1, 1.2, 1.1, 1])
 with q_col1:
     if total_leads > 0:
-        is_done = st.session_state.lead_idx in st.session_state.done_indices
-        saved_disp = st.session_state.disposition_sheet.get(st.session_state.lead_idx, {}).get("disposition", "")
+        is_done = profile["lead_idx"] in profile["done_indices"]
+        saved_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition", "")
         status_tag = f"✅ {saved_disp}" if saved_disp else ("✅ Done" if is_done else "📞 Pending")
-        st.markdown(f"**{status_tag} — Lead {st.session_state.lead_idx + 1} of {total_leads}:** `{default_name}`")
+        st.markdown(f"**{status_tag} — Lead {profile['lead_idx'] + 1} of {total_leads}:** `{default_name}`")
     else:
         st.markdown("**Active Lead:** Manual Mode")
 
 with q_col2:
-    if st.button("⬅️ Prev", use_container_width=True, disabled=total_leads == 0 or st.session_state.lead_idx == 0):
-        st.session_state.lead_idx -= 1
-        save_state_backup()
+    if st.button("⬅️ Prev", use_container_width=True, disabled=total_leads == 0 or profile["lead_idx"] == 0):
+        profile["lead_idx"] -= 1
+        save_caller_backup(caller_name, profile)
         st.rerun()
 
 with q_col3:
@@ -293,52 +364,61 @@ with q_col4:
             "Jump #",
             min_value=1,
             max_value=total_leads,
-            value=st.session_state.lead_idx + 1,
+            value=profile["lead_idx"] + 1,
             label_visibility="collapsed",
-            key=f"jump_input_{st.session_state.lead_idx}",
+            key=f"jump_input_{current_slug}_{profile['lead_idx']}",
         )
-        if int(jump_num) - 1 != st.session_state.lead_idx:
-            st.session_state.lead_idx = int(jump_num) - 1
-            save_state_backup()
+        if int(jump_num) - 1 != profile["lead_idx"]:
+            profile["lead_idx"] = int(jump_num) - 1
+            save_caller_backup(caller_name, profile)
             st.rerun()
 
 with q_col5:
     if st.button("🔄 Reset", use_container_width=True, disabled=total_leads == 0):
-        st.session_state.lead_idx = 0
-        st.session_state.done_indices.clear()
-        st.session_state.disposition_sheet.clear()
-        st.session_state.synced_indices.clear()
-        if os.path.exists(BACKUP_FILE):
+        profile["lead_idx"] = 0
+        profile["done_indices"].clear()
+        profile["disposition_sheet"].clear()
+        profile["synced_indices"].clear()
+        backup_path = get_backup_file(caller_name)
+        if os.path.exists(backup_path):
             try:
-                os.remove(BACKUP_FILE)
+                os.remove(backup_path)
             except Exception:
                 pass
         st.rerun()
 
 e_col1, e_col2, e_col3 = st.columns([1.4, 1.4, 1.2])
 with e_col1:
-    lead_name = st.text_input("Lead ka Naam", value=default_name, key=f"name_{st.session_state.lead_idx}_{default_name}")
+    lead_name = st.text_input(
+        "Lead ka Naam",
+        value=default_name,
+        key=f"name_{current_slug}_{profile['lead_idx']}_{default_name}",
+    )
 with e_col2:
-    lead_phone = st.text_input("Lead ka Phone Number", value=default_phone, key=f"phone_{st.session_state.lead_idx}_{default_phone}")
+    lead_phone = st.text_input(
+        "Lead ka Phone Number",
+        value=default_phone,
+        key=f"phone_{current_slug}_{profile['lead_idx']}_{default_phone}",
+    )
 with e_col3:
-    existing_disp = st.session_state.disposition_sheet.get(st.session_state.lead_idx, {}).get("disposition")
+    existing_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition")
     disp_select = st.selectbox(
         "Call Disposition",
         options=disposition_options,
         index=disposition_options.index(existing_disp) if existing_disp in disposition_options else 0,
-        key=f"disp_{st.session_state.lead_idx}",
+        key=f"disp_{current_slug}_{profile['lead_idx']}",
     )
 
 st.divider()
 
 st.subheader("🧠 1. Lead Reply Analyzer (Paste Reply / Call Note)")
-existing_note = st.session_state.disposition_sheet.get(st.session_state.lead_idx, {}).get("note", "")
+existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
 lead_reply = st.text_area(
     "Lead ne WhatsApp par kya likha ya phone par kya bola?",
     value=existing_note,
     placeholder="Example: 'Haan details bhejo', 'Kya ismein fees lagegi?', 'Abhi busy hoon kal call karna', 'Not interested'",
     height=75,
-    key=f"reply_{st.session_state.lead_idx}",
+    key=f"reply_{current_slug}_{profile['lead_idx']}",
 )
 
 analysis = analyze_lead_reply(lead_reply)
@@ -353,7 +433,7 @@ if analysis:
         st.info(f"**Status:** {analysis['status']}  \n**Next Action:** {analysis['action']}")
 
 if next_clicked and total_leads > 0:
-    idx_now = st.session_state.lead_idx
+    idx_now = profile["lead_idx"]
     final_disp = disp_select if disp_select else (analysis["disposition"] if analysis else "Follow-Up")
     saved_record = {
         "lead_no": idx_now + 1,
@@ -363,22 +443,32 @@ if next_clicked and total_leads > 0:
         "note": lead_reply.strip(),
         "caller": caller_name,
     }
-    st.session_state.disposition_sheet[idx_now] = saved_record
-    st.session_state.synced_indices.discard(idx_now)
-    st.session_state.done_indices.add(idx_now)
+    profile["disposition_sheet"][idx_now] = saved_record
+    profile["synced_indices"].discard(idx_now)
+    profile["done_indices"].add(idx_now)
+
+    next_idx = idx_now + 1 if idx_now < total_leads - 1 else idx_now
+    if idx_now < total_leads - 1:
+        profile["lead_idx"] = next_idx
+
+    save_caller_backup(caller_name, profile)
 
     if auto_sync_sheet and gsheet_webhook.strip():
+        live_info = {
+            "caller": caller_name,
+            "current_lead": f"#{next_idx + 1} - {parsed_leads[next_idx]['name']}" if total_leads else lead_name,
+            "completed": f"{len(profile['done_indices'])}/{total_leads}",
+            "last_disposition": final_disp,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
         try:
-            status_code, _ = push_to_google_sheet(gsheet_webhook, [saved_record])
+            status_code, _ = push_to_google_sheet(gsheet_webhook, [saved_record], live_activity=live_info)
             if 200 <= status_code < 300:
-                st.session_state.synced_indices.add(idx_now)
+                profile["synced_indices"].add(idx_now)
+                save_caller_backup(caller_name, profile)
         except Exception:
             pass
 
-    if idx_now < total_leads - 1:
-        st.session_state.lead_idx += 1
-
-    save_state_backup()
     st.rerun()
 
 st.divider()
@@ -434,7 +524,12 @@ display_num = f"+{formatted_num}" if len(formatted_num) >= 10 else (lead_phone o
 
 with col1:
     st.subheader("💬 2. Ready WhatsApp Message")
-    wa_type = st.selectbox("Message Type Chuno", wa_keys, index=default_wa_idx, key=f"wa_type_{st.session_state.lead_idx}")
+    wa_type = st.selectbox(
+        "Message Type Chuno",
+        wa_keys,
+        index=default_wa_idx,
+        key=f"wa_type_{current_slug}_{profile['lead_idx']}",
+    )
     selected_wa_text = wa_messages[wa_type]
     st.code(selected_wa_text, language="text")
 
@@ -450,7 +545,12 @@ with col2:
     st.markdown("**Dial Number (Copy / Call):**")
     st.code(display_num, language="text")
 
-    call_type = st.selectbox("Call Situation Chuno", call_keys, index=default_call_idx, key=f"call_type_{st.session_state.lead_idx}")
+    call_type = st.selectbox(
+        "Call Situation Chuno",
+        call_keys,
+        index=default_call_idx,
+        key=f"call_type_{current_slug}_{profile['lead_idx']}",
+    )
     st.code(call_scripts[call_type], language="text")
 
     if len(formatted_num) >= 10:
@@ -462,13 +562,17 @@ with col2:
 st.divider()
 st.subheader("📊 4. Disposition Sheet (Interested / Not Interested Tracker)")
 
-sorted_keys = sorted(st.session_state.disposition_sheet.keys())
-sheet_rows = [st.session_state.disposition_sheet[k] for k in sorted_keys]
+sorted_keys = sorted(profile["disposition_sheet"].keys())
+sheet_rows = [profile["disposition_sheet"][k] for k in sorted_keys]
 
 if sheet_rows:
     int_count = sum(1 for r in sheet_rows if r["disposition"] == "Interested")
     not_int_count = sum(1 for r in sheet_rows if r["disposition"] == "Not Interested")
-    fu_count = sum(1 for r in sheet_rows if r["disposition"] in ["Follow-Up", "Doubt / Beginner", "Not Picked / Switched Off"])
+    fu_count = sum(
+        1
+        for r in sheet_rows
+        if r["disposition"] in ["Follow-Up", "Doubt / Beginner", "Not Picked / Switched Off"]
+    )
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Logged", len(sheet_rows))
@@ -479,7 +583,7 @@ if sheet_rows:
     filter_disp = st.selectbox(
         "Filter Disposition",
         ["All"] + disposition_options,
-        key="filter_disp_select",
+        key=f"filter_disp_select_{current_slug}",
     )
 
     filtered_rows = (
@@ -490,8 +594,8 @@ if sheet_rows:
 
     st.dataframe(filtered_rows, use_container_width=True, hide_index=True)
 
-    unsynced_keys = [k for k in sorted_keys if k not in st.session_state.synced_indices]
-    unsynced_rows = [st.session_state.disposition_sheet[k] for k in unsynced_keys]
+    unsynced_keys = [k for k in sorted_keys if k not in profile["synced_indices"]]
+    unsynced_rows = [profile["disposition_sheet"][k] for k in unsynced_keys]
 
     s_col1, s_col2 = st.columns(2)
     with s_col1:
@@ -499,12 +603,20 @@ if sheet_rows:
             f"☁️ Sync to Google Sheet ({len(unsynced_rows)} new)",
             use_container_width=True,
             disabled=not gsheet_webhook.strip() or not unsynced_rows,
+            key=f"sync_btn_{current_slug}",
         ):
+            live_info = {
+                "caller": caller_name,
+                "current_lead": f"#{profile['lead_idx'] + 1} - {lead_name}",
+                "completed": f"{done_count}/{total_leads}",
+                "last_disposition": sheet_rows[-1]["disposition"],
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
             try:
-                status_code, _ = push_to_google_sheet(gsheet_webhook, unsynced_rows)
+                status_code, _ = push_to_google_sheet(gsheet_webhook, unsynced_rows, live_activity=live_info)
                 if 200 <= status_code < 300:
-                    st.session_state.synced_indices.update(unsynced_keys)
-                    save_state_backup()
+                    profile["synced_indices"].update(unsynced_keys)
+                    save_caller_backup(caller_name, profile)
                     st.success(f"{len(unsynced_rows)} rows Google Sheet mein sync ho gayi!")
                     st.rerun()
                 else:
@@ -516,9 +628,39 @@ if sheet_rows:
         st.download_button(
             label="⬇️ Download Disposition Sheet (CSV)",
             data=build_csv(sheet_rows),
-            file_name="trade_vertex_disposition_sheet.csv",
+            file_name=f"trade_vertex_disposition_{current_slug}.csv",
             mime="text/csv",
             use_container_width=True,
+            key=f"dl_btn_{current_slug}",
         )
 else:
     st.info("Abhi koi disposition save nahi hua hai. Call/reply ke baad disposition chun kar **Save & Next ➡️** dabao — sheet yahan ban jayegi.")
+
+st.divider()
+st.subheader("👀 5. Admin Live Team Monitor (5on Callers Kya Kar Rahe Hain)")
+
+local_team_rows = []
+for slug, prof in st.session_state.caller_profiles.items():
+    p_leads = parse_leads_text(prof.get("raw_leads", ""))
+    p_total = len(p_leads)
+    p_idx = min(prof.get("lead_idx", 0), max(p_total - 1, 0)) if p_total > 0 else 0
+    curr_lbl = f"#{p_idx + 1} - {p_leads[p_idx]['name']}" if p_total > 0 else "No Batch"
+    last_rec = prof["disposition_sheet"][max(prof["disposition_sheet"].keys())] if prof.get("disposition_sheet") else None
+    local_team_rows.append({
+        "caller_slug": slug,
+        "current_lead": curr_lbl,
+        "completed": f"{len(prof.get('done_indices', set()))}/{p_total}",
+        "logged_count": len(prof.get("disposition_sheet", {})),
+        "last_disposition": last_rec["disposition"] if last_rec else "—",
+    })
+
+if local_team_rows:
+    st.caption("Is device/session mein active caller profiles:")
+    st.dataframe(local_team_rows, use_container_width=True, hide_index=True)
+
+if st.button("🔄 Refresh All Callers Live Data from Google Sheet", use_container_width=True, disabled=not gsheet_webhook.strip()):
+    try:
+        sheet_data = fetch_live_sheet_data(gsheet_webhook)
+        st.json(sheet_data)
+    except Exception as e:
+        st.info("Google Sheet live view ke liye Apps Script mein `doGet(e)` bhi add karna hoga — neeche diya hua Code.gs update paste kar do.")
