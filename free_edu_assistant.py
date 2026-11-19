@@ -17,6 +17,19 @@ st.caption("Assign or paste leads, manage calls & WhatsApp follow-ups, log dispo
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
 
+
+def get_default_webhook_url() -> str:
+    try:
+        secret_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
+        if isinstance(secret_url, str) and secret_url.strip():
+            return secret_url.strip()
+    except Exception:
+        pass
+    return ""  # Yahan apna deployed Apps Script /exec URL daal dena: "https://script.google.com/macros/s/.../exec"
+
+
+DEFAULT_GSHEET_WEBHOOK = get_default_webhook_url()
+
 DEFAULT_CALLER_AUTH_MAP = {
     "Caller 1": {"id": "C1", "pin": "1101"},
     "Caller 2": {"id": "C2", "pin": "1102"},
@@ -374,6 +387,7 @@ with st.sidebar:
     st.header("2. Google Sheet Sync")
     gsheet_webhook = st.text_input(
         "Apps Script Web App URL",
+        value=DEFAULT_GSHEET_WEBHOOK,
         placeholder="https://script.google.com/macros/s/.../exec",
     )
     auto_sync_sheet = st.checkbox(
