@@ -11,7 +11,7 @@ import streamlit as st
 st.set_page_config(page_title="Trade Vertex - Smart Calling & WA Helper", layout="wide")
 
 st.title("📚 Trade Vertex — Smart Lead Classifier, Calling & WA Helper")
-st.caption("Leads assign/paste karo, call & WhatsApp karo, disposition save karo, aur 5on callers ka live status track karo.")
+st.caption("Assign or paste leads, manage calls & WhatsApp follow-ups, log dispositions, and track live caller progress.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "trade_vertex_auth_config.json"
@@ -158,17 +158,17 @@ def analyze_lead_reply(reply_text: str):
             "status": "❌ Not Interested",
             "disposition": "Not Interested",
             "color": "error",
-            "action": "Is lead par time waste mat karo. Next Lead par aage badho.",
-            "suggested_wa": "First Touch (Call ke baad / Pehela Message)",
-            "suggested_call": "Opening (Pehle 20 Second)",
+            "action": "Do not spend extra time on this lead. Move to the next lead.",
+            "suggested_wa": "First Touch (Post-Call / Initial Message)",
+            "suggested_call": "Opening (First 20 Seconds)",
         }
     if any(k in text for k in hot_kw):
         return {
             "status": "🔥 Hot / Interested Lead",
             "disposition": "Interested",
             "color": "success",
-            "action": "Turant WhatsApp par session detail/link bhejo aur aaj ki class mein join karwao.",
-            "suggested_wa": "First Touch (Call ke baad / Pehela Message)",
+            "action": "Share the session details/link immediately and onboard for today's live class.",
+            "suggested_wa": "First Touch (Post-Call / Initial Message)",
             "suggested_call": "Closing / WhatsApp Push",
         }
     if any(k in text for k in doubt_kw):
@@ -176,27 +176,27 @@ def analyze_lead_reply(reply_text: str):
             "status": "🤔 Doubt / Beginner Lead (High Potential)",
             "disposition": "Doubt / Beginner",
             "color": "warning",
-            "action": "Inka doubt clear karo ki yeh 100% free educational session hai, phir link bhejo.",
-            "suggested_wa": "Doubt: Kya Yeh Sach Mein Free Hai?",
-            "suggested_call": "Agar Bole: 'Paise / Fees Lagegi Kya?'",
+            "action": "Clarify that this is a 100% free educational session, then share the session details.",
+            "suggested_wa": "Doubt: Is This Really Free?",
+            "suggested_call": "If Asked: 'Will There Be Any Fees?'",
         }
     if any(k in text for k in followup_kw):
         return {
             "status": "⏳ Call Back / Follow-Up Lead",
             "disposition": "Follow-Up",
             "color": "info",
-            "action": "Abhi force mat karo. WhatsApp par short detail chhod do aur kal/bataye time par follow-up lo.",
-            "suggested_wa": "Follow-Up: Baad Mein Dekhenge / Kal Baat Karte Hain",
-            "suggested_call": "Opening (Pehle 20 Second)",
+            "action": "Do not push immediately. Leave brief details on WhatsApp and follow up at the requested time.",
+            "suggested_wa": "Follow-Up: Will Check Later / Connect Tomorrow",
+            "suggested_call": "Opening (First 20 Seconds)",
         }
 
     return {
         "status": "🟡 Neutral / Needs Quick Clarification",
         "disposition": "Follow-Up",
         "color": "info",
-        "action": "Ek short message bhej kar pucho ki wo free live class ki detail chahte hain ya nahi.",
-        "suggested_wa": "First Touch (Call ke baad / Pehela Message)",
-        "suggested_call": "Opening (Pehle 20 Second)",
+        "action": "Send a short message asking whether they would like details for the free live session.",
+        "suggested_wa": "First Touch (Post-Call / Initial Message)",
+        "suggested_call": "Opening (First 20 Seconds)",
     }
 
 
@@ -305,7 +305,6 @@ if "verified_profiles" not in st.session_state:
 
 caller_auth_map = st.session_state.caller_auth_map
 
-# Sidebar: Caller Login, Class Settings, Sheet Sync, Caller ID/PIN Creator & Lead Assignment
 with st.sidebar:
     st.header("1. Caller Login & Class Settings")
     brand_name = st.text_input("Brand Name", value="Trade Vertex")
@@ -316,12 +315,12 @@ with st.sidebar:
         index=0,
     )
     entered_caller_id = st.text_input(
-        "Apna Caller ID Daalo",
-        placeholder="Jaise: TV-C1",
+        "Enter Caller ID",
+        placeholder="Example: TV-C1",
         key=f"cid_input_{selected_preset}",
     )
     entered_caller_pin = st.text_input(
-        "Apna PIN Daalo",
+        "Enter PIN",
         type="password",
         placeholder="4-digit PIN",
         key=f"cpin_input_{selected_preset}",
@@ -334,14 +333,14 @@ with st.sidebar:
     )
 
     topic = st.selectbox(
-        "Topic / Focus",
+        "Session Topic",
         [
             "Free Basics & Chart Reading Class",
             "Free Price Action & Market Structure Session",
             "Free Beginner Live Class",
         ],
     )
-    class_time = st.text_input("Class Timing / Offer Line", value="Aaj sham 8 baje ki free live class")
+    class_time = st.text_input("Session Timing / Offer Line", value="Aaj sham 8 baje ki free live class")
 
     st.divider()
     st.header("2. Google Sheet Sync")
@@ -350,21 +349,21 @@ with st.sidebar:
         placeholder="https://script.google.com/macros/s/.../exec",
     )
     auto_sync_sheet = st.checkbox(
-        "Save & Next par auto Google Sheet sync + live activity",
+        "Auto-sync to Google Sheet & live status on Save & Next",
         value=True,
     )
 
     st.divider()
-    st.header("3. Admin Control (ID/PIN & Leads)")
-    admin_pin_input = st.text_input("Admin PIN", type="password", placeholder="Admin PIN", key="admin_pin_box")
+    st.header("3. Admin Access")
+    admin_pin_input = st.text_input("Admin PIN", type="password", placeholder="Enter Admin PIN", key="admin_pin_box")
     is_admin_verified = admin_pin_input.strip() == ADMIN_PIN
 
     if is_admin_verified:
-        st.success("Admin Unlocked: Dashboard se hi ID/PIN banao aur leads assign karo.")
+        st.success("Admin access granted.")
 
-        with st.expander("🔑 Caller ID & PIN Banao / Badlo", expanded=True):
+        with st.expander("🔑 Manage Caller ID & PIN", expanded=True):
             manage_slot = st.selectbox(
-                "Kis Caller Ka ID/PIN Set Karna Hai?",
+                "Select Caller Slot",
                 list(caller_auth_map.keys()),
                 key="manage_id_pin_slot",
             )
@@ -379,24 +378,24 @@ with st.sidebar:
                 value=curr_creds["pin"],
                 key=f"edit_cpin_{manage_slot}",
             )
-            if st.button(f"💾 Save {manage_slot} ID & PIN", use_container_width=True, key=f"save_creds_{manage_slot}"):
+            if st.button(f"Save {manage_slot} Credentials", use_container_width=True, key=f"save_creds_{manage_slot}"):
                 clean_id = new_cid.strip().upper() or curr_creds["id"]
                 clean_pin = new_cpin.strip() or curr_creds["pin"]
                 caller_auth_map[manage_slot] = {"id": clean_id, "pin": clean_pin}
                 save_auth_config(caller_auth_map)
-                st.success(f"{manage_slot} ka ID ({clean_id}) aur PIN save ho gaya!")
+                st.success(f"{manage_slot} credentials updated.")
                 st.rerun()
 
-            st.caption("Current Active Caller IDs & PINs:")
+            st.caption("Active Caller Credentials:")
             creds_table = [
                 {"Slot": k, "Caller ID": v["id"], "PIN": v["pin"]}
                 for k, v in caller_auth_map.items()
             ]
             st.dataframe(creds_table, use_container_width=True, hide_index=True)
 
-        with st.expander("📥 5on Callers Ko Leads Assign Karo"):
+        with st.expander("5 Caller Lead Assign"):
             admin_target_caller = st.selectbox(
-                "Target Caller Chuno",
+                "Select Target Caller",
                 list(caller_auth_map.keys()),
                 key="admin_target_caller_select",
             )
@@ -408,7 +407,7 @@ with st.sidebar:
             t_profile = st.session_state.verified_profiles[t_slug]
 
             admin_uploaded = st.file_uploader(
-                f"{admin_target_caller} ke liye CSV / TXT Upload",
+                f"Upload CSV / TXT for {admin_target_caller}",
                 type=["csv", "txt"],
                 key=f"admin_upload_{t_slug}",
             )
@@ -418,29 +417,28 @@ with st.sidebar:
                     t_profile["raw_leads"] = parsed_up
                     t_profile["lead_idx"] = 0
                     save_caller_backup(admin_target_caller, t_profile)
-                    st.success(f"{admin_target_caller} ki uploaded file save ho gayi!")
+                    st.success(f"Uploaded leads saved for {admin_target_caller}.")
 
             admin_leads_text = st.text_area(
-                f"{admin_target_caller} ki Leads Paste Karo (Har line: Naam, Number)",
+                f"Paste Leads for {admin_target_caller} (One per line: Name, Phone)",
                 value=t_profile.get("raw_leads", ""),
                 height=130,
                 key=f"admin_paste_{t_slug}",
             )
-            if st.button(f"Save {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
+            if st.button(f"Assign {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
                 t_profile["raw_leads"] = admin_leads_text
                 t_profile["lead_idx"] = 0
                 save_caller_backup(admin_target_caller, t_profile)
-                st.success(f"{admin_target_caller} ke liye leads save ho gayin!")
+                st.success(f"Leads assigned to {admin_target_caller}.")
                 st.rerun()
     elif admin_pin_input.strip():
-        st.caption("Galat Admin PIN.")
+        st.caption("Invalid Admin PIN.")
 
-# Strict Caller Lock Check
 if not is_caller_verified:
     st.warning(
-        f"🔒 **{selected_preset} Locked:** Apni leads, dialer aur disposition sheet dekhne ke liye left sidebar mein sahi **Caller ID** aur **PIN** daalein."
+        f"🔒 **{selected_preset} Locked:** Enter a valid **Caller ID** and **PIN** in the sidebar to access your leads, dialer, and disposition sheet."
     )
-    st.info("Har employee ko sirf uska apna ID + PIN hi dein taaki koi kisi aur ka lead data na dekh sake.")
+    st.info("Share only each caller's respective ID and PIN so lead data remains isolated per caller.")
 else:
     caller_name = selected_preset
     current_slug = safe_caller_slug(caller_name)
@@ -460,7 +458,7 @@ else:
         st.caption(f"Logged in as: **{caller_name}** (`{expected_auth['id']}`)")
 
         active_upload = st.file_uploader(
-            "CSV / TXT File Upload Karo",
+            "Upload CSV / TXT File",
             type=["csv", "txt"],
             key=f"caller_upload_{current_slug}",
         )
@@ -473,7 +471,7 @@ else:
                 st.rerun()
 
         raw_leads = st.text_area(
-            "150 tak leads (Har line: Naam, Number)",
+            "Up to 150 Leads (One per line: Name, Phone)",
             value=profile.get("raw_leads", ""),
             height=140,
             key=f"caller_batch_{current_slug}",
@@ -554,13 +552,13 @@ else:
     e_col1, e_col2, e_col3 = st.columns([1.4, 1.4, 1.2])
     with e_col1:
         lead_name = st.text_input(
-            "Lead ka Naam",
+            "Lead Name",
             value=default_name,
             key=f"name_{current_slug}_{profile['lead_idx']}_{default_name}",
         )
     with e_col2:
         lead_phone = st.text_input(
-            "Lead ka Phone Number",
+            "Lead Phone Number",
             value=default_phone,
             key=f"phone_{current_slug}_{profile['lead_idx']}_{default_phone}",
         )
@@ -578,9 +576,9 @@ else:
     st.subheader("🧠 1. Lead Reply Analyzer (Paste Reply / Call Note)")
     existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
     lead_reply = st.text_area(
-        "Lead ne WhatsApp par kya likha ya phone par kya bola?",
+        "What did the lead reply on WhatsApp or say on the call?",
         value=existing_note,
-        placeholder="Example: 'Haan details bhejo', 'Kya ismein fees lagegi?', 'Abhi busy hoon kal call karna', 'Not interested'",
+        placeholder="Example: 'Please share details', 'Is there any fee?', 'Busy right now, call tomorrow', 'Not interested'",
         height=75,
         key=f"reply_{current_slug}_{profile['lead_idx']}",
     )
@@ -638,38 +636,38 @@ else:
     st.divider()
 
     wa_messages = {
-        "First Touch (Call ke baad / Pehela Message)": (
+        "First Touch (Post-Call / Initial Message)": (
             f"Namaste {lead_name} ji 👋\n"
             f"{brand_name} se baat kar raha hoon.\n\n"
             f"Humne aapke liye *{topic}* rakhi hai ({class_time}) — yeh *100% free educational session* hai (koi tip ya paid signal nahi).\n\n"
             f"Agar aap seekhna chahte hain toh *YES* likh kar bhejein, main join karne ki detail bhej deta hoon."
         ),
-        "Call Nahi Uthaya (Missed / Not Picked)": (
+        "Missed / Not Picked Call": (
             f"Hi {lead_name} ji, abhi {brand_name} se call kiya tha par connect nahi ho paya.\n\n"
             f"Hum *{topic}* ke liye free educational guidance de rahe hain.\n"
             f"Jab free hon toh batayein, kya main aapko {class_time} ki detail yahan bhej dun?"
         ),
-        "Doubt: Kya Yeh Sach Mein Free Hai?": (
+        "Doubt: Is This Really Free?": (
             f"Bilkul {lead_name} ji, yeh *{topic}* learning & awareness ke liye *100% free* hai.\n\n"
             f"Hamara focus sirf concepts samjhana hai taaki aap khud market ko better samajh sakein.\n"
             f"Kya main aapko session ka link/timing bhej dun?"
         ),
-        "Follow-Up: Baad Mein Dekhenge / Kal Baat Karte Hain": (
+        "Follow-Up: Will Check Later / Connect Tomorrow": (
             f"Koi baat nahi {lead_name} ji 👍\n"
             f"Jab aapko waqt mile tab zaroor batana. *{topic}* ke basic notes/details main yahan rakh deta hoon taaki aaram se dekh sakein."
         ),
     }
 
     call_scripts = {
-        "Opening (Pehle 20 Second)": (
+        "Opening (First 20 Seconds)": (
             f"\"Hello {lead_name} ji, namaste! Main {brand_name} se bol raha hoon. Aapne market learning ke liye enquiry ki thi — "
             f"hum *{topic}* kara rahe hain jo bilkul free educational class hai. Kya aap abhi 30 second baat kar sakte hain?\""
         ),
-        "Agar Bole: 'Mujhe Kuch Nahi Aata'": (
+        "If Asked: 'I Don't Know Anything About This'": (
             f"\"Bilkul koi dikkat nahi {lead_name} ji, yeh session shuruat se seekhne walon ke liye hi hai — bilkul simple bhasha mein. "
             f"Main aapko WhatsApp par short detail bhej deta hoon, pehle wahan dekh lijiyega.\""
         ),
-        "Agar Bole: 'Paise / Fees Lagegi Kya?'": (
+        "If Asked: 'Will There Be Any Fees?'": (
             f"\"Nahi {lead_name} ji, yeh *{topic}* learning ke liye free hai. Main abhi aapko WhatsApp par exact details bhej raha hoon, aap khud check kar lijiyega.\""
         ),
         "Closing / WhatsApp Push": (
@@ -689,7 +687,7 @@ else:
     with col1:
         st.subheader("💬 2. Ready WhatsApp Message")
         wa_type = st.selectbox(
-            "Message Type Chuno",
+            "Select Message Template",
             wa_keys,
             index=default_wa_idx,
             key=f"wa_type_{current_slug}_{profile['lead_idx']}",
@@ -700,17 +698,17 @@ else:
         if len(formatted_num) >= 10:
             encoded_msg = urllib.parse.quote(selected_wa_text)
             wa_url = f"https://wa.me/{formatted_num}?text={encoded_msg}"
-            st.link_button(f"📲 WhatsApp Par Bhejo ({display_num})", wa_url, use_container_width=True)
+            st.link_button(f"📲 Send on WhatsApp ({display_num})", wa_url, use_container_width=True)
         else:
-            st.caption("10-digit number daalne par direct WhatsApp link ban jayega.")
+            st.caption("Enter a 10-digit phone number to generate a direct WhatsApp link.")
 
     with col2:
         st.subheader("📞 3. Ready Calling Script")
-        st.markdown("**Dial Number (Copy / Call):**")
+        st.markdown("**Dial Number:**")
         st.code(display_num, language="text")
 
         call_type = st.selectbox(
-            "Call Situation Chuno",
+            "Select Call Scenario",
             call_keys,
             index=default_call_idx,
             key=f"call_type_{current_slug}_{profile['lead_idx']}",
@@ -719,12 +717,12 @@ else:
 
         if len(formatted_num) >= 10:
             tel_url = f"tel:+{formatted_num}"
-            st.link_button(f"📞 Call Dialer Kholo ({display_num})", tel_url, use_container_width=True)
+            st.link_button(f"📞 Open Dialer ({display_num})", tel_url, use_container_width=True)
         else:
-            st.caption("Phone number daalne par dialer kholne ka button aayega.")
+            st.caption("Enter a phone number to enable the dialer button.")
 
     st.divider()
-    st.subheader("📊 4. Disposition Sheet (Interested / Not Interested Tracker)")
+    st.subheader("📊 4. Disposition Sheet")
 
     sorted_keys = sorted(profile["disposition_sheet"].keys())
     sheet_rows = [profile["disposition_sheet"][k] for k in sorted_keys]
@@ -783,7 +781,7 @@ else:
                     if 200 <= status_code < 300:
                         profile["synced_indices"].update(unsynced_keys)
                         save_caller_backup(caller_name, profile)
-                        st.success(f"{len(unsynced_rows)} rows Google Sheet mein sync ho gayi!")
+                        st.success(f"{len(unsynced_rows)} rows synced to Google Sheet.")
                         st.rerun()
                     else:
                         st.error(f"Google Sheet response status: {status_code}")
@@ -800,12 +798,11 @@ else:
                 key=f"dl_btn_{current_slug}",
             )
     else:
-        st.info("Abhi koi disposition save nahi hua hai. Call/reply ke baad disposition chun kar **Save & Next ➡️** dabao — sheet yahan ban jayegi.")
+        st.info("No dispositions logged yet. Select a disposition and click **Save & Next ➡️** to populate the sheet.")
 
-# Admin Live Team Monitor (Only visible when Admin PIN matches)
 if is_admin_verified:
     st.divider()
-    st.subheader("👀 5. Admin Live Team Monitor (5on Callers Kya Kar Rahe Hain)")
+    st.subheader("👀 5. Admin Live Team Monitor")
 
     local_team_rows = []
     for c_name, auth_info in caller_auth_map.items():
@@ -819,21 +816,21 @@ if is_admin_verified:
             disp_map = prof.get("disposition_sheet", {})
             last_rec = disp_map[max(disp_map.keys())] if disp_map else None
             local_team_rows.append({
-                "caller": c_name,
-                "caller_id": auth_info["id"],
-                "current_lead": curr_lbl,
-                "completed": f"{len(prof.get('done_indices', set()))}/{p_total}",
-                "logged_count": len(disp_map),
-                "last_disposition": last_rec["disposition"] if last_rec else "—",
+                "Caller": c_name,
+                "Caller ID": auth_info["id"],
+                "Current Lead": curr_lbl,
+                "Completed": f"{len(prof.get('done_indices', set()))}/{p_total}",
+                "Logged": len(disp_map),
+                "Last Disposition": last_rec["disposition"] if last_rec else "—",
             })
         else:
             local_team_rows.append({
-                "caller": c_name,
-                "caller_id": auth_info["id"],
-                "current_lead": "Not Started",
-                "completed": "0/0",
-                "logged_count": 0,
-                "last_disposition": "—",
+                "Caller": c_name,
+                "Caller ID": auth_info["id"],
+                "Current Lead": "Not Started",
+                "Completed": "0/0",
+                "Logged": 0,
+                "Last Disposition": "—",
             })
 
     st.dataframe(local_team_rows, use_container_width=True, hide_index=True)
@@ -850,7 +847,7 @@ if is_admin_verified:
             st.json(sheet_data)
         except Exception:
             st.info(
-                "Google Sheet live view ke liye Apps Script mein `doGet(e)` bhi hona chahiye aur deploy update hona chahiye."
+                "Ensure your Apps Script deployment includes `doGet(e)` and is republished to fetch live sheet data."
             )
 
     cached_sheet_rows = st.session_state.get("live_sheet_cache", [])
