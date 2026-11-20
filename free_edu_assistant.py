@@ -12,7 +12,7 @@ import streamlit as st
 st.set_page_config(page_title="Smart Calling & WA Helper", layout="wide")
 
 st.title("📚 Smart Lead Classifier, Calling & WA Helper")
-st.caption("Fast, lightweight multi-caller lead dialer, smart WhatsApp templates, and live disposition tracker.")
+st.caption("Fast, lightweight multi-caller lead dialer, one-tap dispositions, follow-up queue, and live WhatsApp templates.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
@@ -46,6 +46,14 @@ DISPOSITION_OPTIONS = [
     "Doubt / Beginner",
     "Follow-Up",
     "Not Interested",
+]
+
+QUICK_DISPOSITIONS = [
+    ("✅ Interested", "Interested"),
+    ("📵 Not Picked", "Not Picked / Switched Off"),
+    ("✂️ Call Cut", "Call Cut"),
+    ("⏳ Busy", "Busy"),
+    ("❌ Not Int.", "Not Interested"),
 ]
 
 FOLLOW_UP_STATUSES = {
@@ -364,6 +372,8 @@ def empty_profile(default_leads_text: str = ""):
         "synced_indices": set(),
         "disposition_sheet": {},
         "raw_leads": default_leads_text,
+        "master_leads": default_leads_text,
+        "in_followup_queue": False,
     }
 
 
@@ -379,6 +389,8 @@ def save_caller_backup(caller_name: str, state_obj: dict):
                 str(k): v for k, v in state_obj.get("disposition_sheet", {}).items()
             },
             "raw_leads": state_obj.get("raw_leads", ""),
+            "master_leads": state_obj.get("master_leads", state_obj.get("raw_leads", "")),
+            "in_followup_queue": bool(state_obj.get("in_followup_queue", False)),
         }
         with open(backup_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -393,6 +405,7 @@ def load_caller_backup(caller_name: str):
     try:
         with open(backup_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
+        raw_text = raw.get("raw_leads", "")
         return {
             "lead_idx": int(raw.get("lead_idx", 0)),
             "done_indices": {int(i) for i in raw.get("done_indices", [])},
@@ -400,10 +413,58 @@ def load_caller_backup(caller_name: str):
             "disposition_sheet": {
                 int(k): v for k, v in raw.get("disposition_sheet", {}).items()
             },
-            "raw_leads": raw.get("raw_leads", ""),
+            "raw_leads": raw_text,
+            "master_leads": raw.get("master_leads", raw_text),
+            "in_followup_queue": bool(raw.get("in_followup_queue", False)),
         }
     except Exception:
         return None
+
+
+def commit_lead_disposition(
+    profile_obj: dict,
+    caller_display_name: str,
+    caller_code: str,
+    idx_now: int,
+    name_val: str,
+    phone_val: str,
+    disp_val: str,
+    note_val: str,
+    total_count: int,
+    leads_list: list,
+    webhook_url: str,
+    auto_sync_enabled: bool,
+):
+    caller_label = f"{caller_display_name} ({caller_code})"
+    saved_record = {
+        "sync_key": build_sync_key(caller_label, idx_now + 1, phone_val, name_val),
+        "lead_no": idx_now + 1,
+        "name": name_val,
+        "phone": phone_val,
+        "disposition": disp_val,
+        "note": note_val.strip(),
+        "caller": caller_label,
+    }
+    profile_obj["disposition_sheet"][idx_now] = saved_record
+    profile_obj["synced_indices"].discard(idx_now)
+    profile_obj["done_indices"].add(idx_now)
+
+    next_idx = idx_now + 1 if idx_now < total_count - 1 else idx_now
+    if idx_now < total_count - 1:
+        profile_obj["lead_idx"] = next_idx
+
+    save_caller_backup(caller_display_name, profile_obj)
+
+    if auto_sync_enabled and webhook_url.strip():
+        live_info = {
+            "caller": caller_label,
+            "current_lead": f"#{next_idx + 1} - {leads_list[next_idx]['name']}" if total_count else name_val,
+            "completed": f"{len(profile_obj['done_indices'])}/{total_count}",
+            "last_disposition": disp_val,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        push_to_google_sheet_async(webhook_url, [saved_record], live_activity=live_info)
+        profile_obj["synced_indices"].add(idx_now)
 
 
 if "caller_auth_map" not in st.session_state:
@@ -450,6 +511,11 @@ with st.sidebar:
         ],
     )
     class_time = st.text_input("Session Timing / Offer Line", value="Aaj sham 8 baje ki free live class")
+    session_link = st.text_input(
+        "Live Session / Join Link",
+        value="",
+        placeholder="https://meet.google.com/... or https://youtube.com/...",
+    )
 
     st.divider()
     st.header("2. Google Sheet Sync")
@@ -521,6 +587,8 @@ with st.sidebar:
                                 load_caller_backup(slot_name) or empty_profile("")
                             )
                         st.session_state.verified_profiles[s_slug]["raw_leads"] = chunk_text
+                        st.session_state.verified_profiles[s_slug]["master_leads"] = chunk_text
+                        st.session_state.verified_profiles[s_slug]["in_followup_queue"] = False
                         st.session_state.verified_profiles[s_slug]["lead_idx"] = 0
                         save_caller_backup(slot_name, st.session_state.verified_profiles[s_slug])
                     st.success("Leads split equally across Caller 1 to Caller 5.")
@@ -550,6 +618,8 @@ with st.sidebar:
                 parsed_up = parse_uploaded_leads_file(admin_uploaded)
                 if parsed_up:
                     t_profile["raw_leads"] = parsed_up
+                    t_profile["master_leads"] = parsed_up
+                    t_profile["in_followup_queue"] = False
                     t_profile["lead_idx"] = 0
                     save_caller_backup(admin_target_caller, t_profile)
                     st.success(f"Uploaded leads saved for {admin_target_caller}.")
@@ -562,6 +632,8 @@ with st.sidebar:
             )
             if st.button(f"Assign {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
                 t_profile["raw_leads"] = admin_leads_text
+                t_profile["master_leads"] = admin_leads_text
+                t_profile["in_followup_queue"] = False
                 t_profile["lead_idx"] = 0
                 save_caller_backup(admin_target_caller, t_profile)
                 st.success(f"Leads assigned to {admin_target_caller}.")
@@ -601,6 +673,8 @@ else:
             up_text = parse_uploaded_leads_file(active_upload)
             if up_text and up_text != profile.get("raw_leads", ""):
                 profile["raw_leads"] = up_text
+                profile["master_leads"] = up_text
+                profile["in_followup_queue"] = False
                 profile["lead_idx"] = 0
                 save_caller_backup(caller_name, profile)
                 st.rerun()
@@ -608,11 +682,13 @@ else:
         raw_leads = st.text_area(
             "Assigned Leads (One per line: Name, Phone)",
             value=profile.get("raw_leads", ""),
-            height=140,
+            height=130,
             key=f"caller_batch_{current_slug}",
         )
         if raw_leads != profile.get("raw_leads", ""):
             profile["raw_leads"] = raw_leads
+            if not profile.get("in_followup_queue", False):
+                profile["master_leads"] = raw_leads
             save_caller_backup(caller_name, profile)
 
     parsed_leads = parse_leads_text(raw_leads)
@@ -629,14 +705,18 @@ else:
         default_phone = ""
 
     done_count = sum(1 for i in profile["done_indices"] if i < total_leads) if total_leads > 0 else 0
+    due_followup_records = [
+        r for r in profile["disposition_sheet"].values() if r.get("disposition") in FOLLOW_UP_STATUSES
+    ]
 
     if total_leads > 0:
+        mode_tag = " [Follow-Up Queue]" if profile.get("in_followup_queue", False) else ""
         st.progress(
             done_count / total_leads,
-            text=f"[{caller_name} | {expected_auth['id']}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1}",
+            text=f"[{caller_name} | {expected_auth['id']}{mode_tag}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1}",
         )
 
-    q_col1, q_col2, q_col3, q_col4, q_col5 = st.columns([2.4, 1, 1.2, 1.1, 1])
+    q_col1, q_col2, q_col3, q_col4, q_col5 = st.columns([2.2, 0.9, 1.2, 1.0, 1.0])
     with q_col1:
         if total_leads > 0:
             is_done = profile["lead_idx"] in profile["done_indices"]
@@ -676,6 +756,9 @@ else:
             profile["done_indices"].clear()
             profile["disposition_sheet"].clear()
             profile["synced_indices"].clear()
+            profile["in_followup_queue"] = False
+            if profile.get("master_leads"):
+                profile["raw_leads"] = profile["master_leads"]
             backup_path = get_backup_file(caller_name)
             if os.path.exists(backup_path):
                 try:
@@ -683,6 +766,39 @@ else:
                 except Exception:
                     pass
             st.rerun()
+
+    # Follow-Up Retry Queue bar
+    if due_followup_records or profile.get("in_followup_queue", False):
+        fq_col1, fq_col2 = st.columns([1.6, 1.4])
+        with fq_col1:
+            if due_followup_records and st.button(
+                f"🔁 Retry {len(due_followup_records)} Due Follow-Ups / Cut / Busy Leads",
+                use_container_width=True,
+                key=f"retry_fu_btn_{current_slug}",
+            ):
+                retry_lines = [
+                    f"{r.get('name', 'Lead')}, {r.get('phone', '')}".strip(", ")
+                    for r in due_followup_records
+                ]
+                if not profile.get("master_leads") and profile.get("raw_leads"):
+                    profile["master_leads"] = profile["raw_leads"]
+                profile["raw_leads"] = "\n".join(retry_lines)
+                profile["lead_idx"] = 0
+                profile["in_followup_queue"] = True
+                save_caller_backup(caller_name, profile)
+                st.rerun()
+        with fq_col2:
+            if profile.get("in_followup_queue", False) and profile.get("master_leads"):
+                if st.button(
+                    "📋 Restore Full Lead Batch",
+                    use_container_width=True,
+                    key=f"restore_batch_btn_{current_slug}",
+                ):
+                    profile["raw_leads"] = profile["master_leads"]
+                    profile["lead_idx"] = 0
+                    profile["in_followup_queue"] = False
+                    save_caller_backup(caller_name, profile)
+                    st.rerun()
 
     e_col1, e_col2, e_col3 = st.columns([1.4, 1.4, 1.2])
     with e_col1:
@@ -706,97 +822,115 @@ else:
             key=f"disp_{current_slug}_{profile['lead_idx']}",
         )
 
-    st.divider()
-
-    st.subheader("🧠 1. Lead Reply Analyzer (Optional Note)")
     existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
-    lead_reply = st.text_area(
-        "What did the lead reply on WhatsApp or say on the call?",
+    lead_reply = st.text_input(
+        "Quick Call Note / Reply (Optional)",
         value=existing_note,
-        placeholder="Example: 'Please share details', 'Is there any fee?', 'Call cut ho gaya', 'Busy right now'",
-        height=68,
+        placeholder="Example: 'Call cut', 'Busy till 6 PM', 'Requested link'",
         key=f"reply_{current_slug}_{profile['lead_idx']}",
     )
+
+    # One-Tap Quick Disposition buttons for fast calling
+    if total_leads > 0:
+        st.caption("One-Tap Quick Save & Next:")
+        q_btns = st.columns(len(QUICK_DISPOSITIONS))
+        quick_chosen_disp = None
+        for idx_b, (btn_label, disp_val) in enumerate(QUICK_DISPOSITIONS):
+            with q_btns[idx_b]:
+                if st.button(
+                    btn_label,
+                    use_container_width=True,
+                    key=f"quick_disp_{current_slug}_{profile['lead_idx']}_{idx_b}",
+                ):
+                    quick_chosen_disp = disp_val
+
+        if quick_chosen_disp:
+            commit_lead_disposition(
+                profile_obj=profile,
+                caller_display_name=caller_name,
+                caller_code=expected_auth["id"],
+                idx_now=profile["lead_idx"],
+                name_val=lead_name,
+                phone_val=lead_phone,
+                disp_val=quick_chosen_disp,
+                note_val=lead_reply,
+                total_count=total_leads,
+                leads_list=parsed_leads,
+                webhook_url=gsheet_webhook,
+                auto_sync_enabled=auto_sync_sheet,
+            )
+            st.rerun()
 
     analysis = analyze_lead_reply(lead_reply)
     if analysis:
         if analysis["color"] == "success":
-            st.success(f"**Status:** {analysis['status']} — {analysis['action']}")
+            st.success(f"**Hint:** {analysis['status']} — {analysis['action']}")
         elif analysis["color"] == "warning":
-            st.warning(f"**Status:** {analysis['status']} — {analysis['action']}")
+            st.warning(f"**Hint:** {analysis['status']} — {analysis['action']}")
         elif analysis["color"] == "error":
-            st.error(f"**Status:** {analysis['status']} — {analysis['action']}")
+            st.error(f"**Hint:** {analysis['status']} — {analysis['action']}")
         else:
-            st.info(f"**Status:** {analysis['status']} — {analysis['action']}")
+            st.info(f"**Hint:** {analysis['status']} — {analysis['action']}")
 
     if next_clicked and total_leads > 0:
-        idx_now = profile["lead_idx"]
-        final_disp = disp_select
-        caller_label = f"{caller_name} ({expected_auth['id']})"
-        saved_record = {
-            "sync_key": build_sync_key(caller_label, idx_now + 1, lead_phone, lead_name),
-            "lead_no": idx_now + 1,
-            "name": lead_name,
-            "phone": lead_phone,
-            "disposition": final_disp,
-            "note": lead_reply.strip(),
-            "caller": caller_label,
-        }
-        profile["disposition_sheet"][idx_now] = saved_record
-        profile["synced_indices"].discard(idx_now)
-        profile["done_indices"].add(idx_now)
-
-        next_idx = idx_now + 1 if idx_now < total_leads - 1 else idx_now
-        if idx_now < total_leads - 1:
-            profile["lead_idx"] = next_idx
-
-        save_caller_backup(caller_name, profile)
-
-        if auto_sync_sheet and gsheet_webhook.strip():
-            live_info = {
-                "caller": caller_label,
-                "current_lead": f"#{next_idx + 1} - {parsed_leads[next_idx]['name']}" if total_leads else lead_name,
-                "completed": f"{len(profile['done_indices'])}/{total_leads}",
-                "last_disposition": final_disp,
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            push_to_google_sheet_async(gsheet_webhook, [saved_record], live_activity=live_info)
-            profile["synced_indices"].add(idx_now)
-
+        commit_lead_disposition(
+            profile_obj=profile,
+            caller_display_name=caller_name,
+            caller_code=expected_auth["id"],
+            idx_now=profile["lead_idx"],
+            name_val=lead_name,
+            phone_val=lead_phone,
+            disp_val=disp_select,
+            note_val=lead_reply,
+            total_count=total_leads,
+            leads_list=parsed_leads,
+            webhook_url=gsheet_webhook,
+            auto_sync_enabled=auto_sync_sheet,
+        )
         st.rerun()
 
     st.divider()
+
+    clean_session_link = session_link.strip()
+    link_line_wa = f"\n🔗 Session Link: {clean_session_link}\n" if clean_session_link else "\n"
+    link_line_call = f" Link ({clean_session_link}) abhi WhatsApp par bhej raha hoon." if clean_session_link else ""
 
     wa_messages = {
         "Interested (Session Details & Onboarding)": (
             f"Namaste {lead_name} ji 👋\n"
             f"{brand_name} se baat kar raha hoon.\n\n"
-            f"Aapke interest ke liye thank you! Humne aapke liye *{topic}* rakhi hai ({class_time}) — yeh *100% free educational session* hai (koi tip ya paid signal nahi).\n\n"
-            f"Confirm karne ke liye *YES* reply karein, main aapko session link aur reminder bhej deta hoon."
+            f"Aapke interest ke liye thank you! Humne aapke liye *{topic}* rakhi hai ({class_time}) — yeh *100% free educational session* hai (koi tip ya paid signal nahi)."
+            f"{link_line_wa}"
+            f"Confirm karne ke liye *YES* reply karein, main aapko reminder bhej deta hoon."
         ),
         "Not Picked / Switched Off": (
             f"Hi {lead_name} ji, abhi {brand_name} se call kiya tha par connect nahi ho paya.\n\n"
-            f"Hum *{topic}* ({class_time}) ke liye 100% free educational guidance de rahe hain.\n"
+            f"Hum *{topic}* ({class_time}) ke liye 100% free educational guidance de rahe hain."
+            f"{link_line_wa}"
             f"Jab free hon toh batayein, kya main aapko session ki details yahan bhej dun?"
         ),
         "Call Cut (Quick Follow-Up)": (
             f"Hi {lead_name} ji, abhi {brand_name} se call connect hua tha par shayad network ki wajah se cut ho gaya.\n\n"
-            f"Humne aapke liye *{topic}* ({class_time}) rakhi hai jo bilkul *100% free educational class* hai.\n"
+            f"Humne aapke liye *{topic}* ({class_time}) rakhi hai jo bilkul *100% free educational class* hai."
+            f"{link_line_wa}"
             f"Agar aap details chahte hain toh *YES* likh kar reply karein."
         ),
         "Busy (Call Back Later)": (
             f"Koi baat nahi {lead_name} ji 👍\n"
-            f"Jab aap free hon tab aaram se dekh lijiyega. *{topic}* ({class_time}) bilkul *100% free educational session* hai.\n\n"
-            f"Free hote hi *YES* reply kar dijiyega, main join link bhej dunga."
+            f"Jab aap free hon tab aaram se dekh lijiyega. *{topic}* ({class_time}) bilkul *100% free educational session* hai."
+            f"{link_line_wa}"
+            f"Free hote hi *YES* reply kar dijiyega, main join detail bhej dunga."
         ),
         "Doubt: Is This Really Free?": (
             f"Bilkul {lead_name} ji, yeh *{topic}* learning & awareness ke liye *100% free* hai.\n\n"
-            f"Hamara focus sirf concepts samjhana hai taaki aap khud market ko better samajh sakein.\n"
+            f"Hamara focus sirf concepts samjhana hai taaki aap khud market ko better samajh sakein."
+            f"{link_line_wa}"
             f"Kya main aapko {class_time} ki detail bhej dun?"
         ),
         "Follow-Up: Will Check Later / Connect Tomorrow": (
             f"Namaste {lead_name} ji 👍\n"
-            f"Reminder ke liye message kar raha hoon — *{topic}* ({class_time}) ke liye aapki slot reserve hai.\n"
+            f"Reminder ke liye message kar raha hoon — *{topic}* ({class_time}) ke liye aapki slot reserve hai."
+            f"{link_line_wa}"
             f"Join karne ke liye *YES* reply kar dein."
         ),
         "Not Interested (Polite Close)": (
@@ -818,7 +952,7 @@ else:
             f"\"Nahi {lead_name} ji, yeh *{topic}* learning ke liye free hai. Main abhi aapko WhatsApp par exact details bhej raha hoon, aap khud check kar lijiyega.\""
         ),
         "Closing / WhatsApp Push": (
-            f"\"Great {lead_name} ji! Main abhi aapko WhatsApp par {class_time} ki detail bhej raha hoon — wahan 'YES' bhej dijiyega taaki aapko reminder mil jaye.\""
+            f"\"Great {lead_name} ji! Main abhi aapko WhatsApp par {class_time} ki detail{link_line_call} bhej raha hoon — wahan 'YES' bhej dijiyega taaki aapko reminder mil jaye.\""
         ),
     }
 
@@ -837,7 +971,7 @@ else:
 
     with col1:
         st.subheader("💬 2. Ready WhatsApp Message")
-        st.caption(f"Auto-matched with disposition: **{disp_select}**")
+        st.caption(f"Matched to disposition: **{disp_select}**")
         wa_type = st.selectbox(
             "Select Message Template",
             wa_keys,
@@ -964,7 +1098,7 @@ else:
                 key=f"dl_btn_{current_slug}",
             )
     else:
-        st.info("No dispositions logged yet. Select a disposition and click **Save & Next ➡️** to populate the sheet.")
+        st.info("No dispositions logged yet. Tap a quick button or click **Save & Next ➡️** to populate the sheet.")
 
 if is_admin_verified:
     st.divider()
