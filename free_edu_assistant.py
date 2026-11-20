@@ -382,6 +382,7 @@ def empty_profile(default_leads_text: str = ""):
         "raw_leads": default_leads_text,
         "master_leads": default_leads_text,
         "in_followup_queue": False,
+        "batch_version": 0,
     }
 
 
@@ -400,6 +401,7 @@ def save_caller_backup(caller_name: str, state_obj: dict):
             "raw_leads": state_obj.get("raw_leads", ""),
             "master_leads": state_obj.get("master_leads", state_obj.get("raw_leads", "")),
             "in_followup_queue": bool(state_obj.get("in_followup_queue", False)),
+            "batch_version": int(state_obj.get("batch_version", 0)),
         }
         with open(backup_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -429,6 +431,7 @@ def load_caller_backup(caller_name: str):
             "raw_leads": raw_text,
             "master_leads": raw.get("master_leads", raw_text),
             "in_followup_queue": bool(raw.get("in_followup_queue", False)),
+            "batch_version": int(raw.get("batch_version", 0)),
         }
     except Exception:
         return None
@@ -681,12 +684,14 @@ with st.sidebar:
                             st.session_state.verified_profiles[s_slug] = (
                                 load_caller_backup(slot_name) or empty_profile("")
                             )
-                        st.session_state.verified_profiles[s_slug]["raw_leads"] = chunk_text
-                        st.session_state.verified_profiles[s_slug]["master_leads"] = chunk_text
-                        st.session_state.verified_profiles[s_slug]["in_followup_queue"] = False
-                        st.session_state.verified_profiles[s_slug]["lead_idx"] = 0
-                        st.session_state.verified_profiles[s_slug]["lead_opened_at"] = time.time()
-                        save_caller_backup(slot_name, st.session_state.verified_profiles[s_slug])
+                        prof_s = st.session_state.verified_profiles[s_slug]
+                        prof_s["raw_leads"] = chunk_text
+                        prof_s["master_leads"] = chunk_text
+                        prof_s["in_followup_queue"] = False
+                        prof_s["lead_idx"] = 0
+                        prof_s["lead_opened_at"] = time.time()
+                        prof_s["batch_version"] = int(prof_s.get("batch_version", 0)) + 1
+                        save_caller_backup(slot_name, prof_s)
                     st.success("Leads split equally across Caller 1 to Caller 5.")
                     st.rerun()
                 else:
@@ -708,24 +713,26 @@ with st.sidebar:
             admin_uploaded = st.file_uploader(
                 f"Upload CSV / TXT for {admin_target_caller}",
                 type=["csv", "txt"],
-                key=f"admin_upload_{t_slug}",
+                key=f"admin_upload_{t_slug}_v{t_profile.get('batch_version', 0)}",
             )
             if admin_uploaded is not None:
                 parsed_up = parse_uploaded_leads_file(admin_uploaded)
-                if parsed_up:
+                if parsed_up and parsed_up != t_profile.get("raw_leads", ""):
                     t_profile["raw_leads"] = parsed_up
                     t_profile["master_leads"] = parsed_up
                     t_profile["in_followup_queue"] = False
                     t_profile["lead_idx"] = 0
                     t_profile["lead_opened_at"] = time.time()
+                    t_profile["batch_version"] = int(t_profile.get("batch_version", 0)) + 1
                     save_caller_backup(admin_target_caller, t_profile)
                     st.success(f"Uploaded leads saved for {admin_target_caller}.")
+                    st.rerun()
 
             admin_leads_text = st.text_area(
                 f"Paste Leads for {admin_target_caller} (One per line: Name, Phone)",
                 value=t_profile.get("raw_leads", ""),
                 height=130,
-                key=f"admin_paste_{t_slug}",
+                key=f"admin_paste_{t_slug}_v{t_profile.get('batch_version', 0)}",
             )
             if st.button(f"Assign {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
                 t_profile["raw_leads"] = admin_leads_text
@@ -733,6 +740,7 @@ with st.sidebar:
                 t_profile["in_followup_queue"] = False
                 t_profile["lead_idx"] = 0
                 t_profile["lead_opened_at"] = time.time()
+                t_profile["batch_version"] = int(t_profile.get("batch_version", 0)) + 1
                 save_caller_backup(admin_target_caller, t_profile)
                 st.success(f"Leads assigned to {admin_target_caller}.")
                 st.rerun()
@@ -756,6 +764,7 @@ else:
             st.session_state.verified_profiles[current_slug] = empty_profile(DEFAULT_LEADS)
 
     profile = st.session_state.verified_profiles[current_slug]
+    batch_ver = int(profile.get("batch_version", 0))
 
     if qp_act in {"call", "wa"} and qp_act_idx.isdigit():
         act_obj = get_action_status(profile, int(qp_act_idx))
@@ -772,7 +781,7 @@ else:
         active_upload = st.file_uploader(
             "Upload CSV / TXT File",
             type=["csv", "txt"],
-            key=f"caller_upload_{current_slug}",
+            key=f"caller_upload_{current_slug}_v{batch_ver}",
         )
         if active_upload is not None:
             up_text = parse_uploaded_leads_file(active_upload)
@@ -782,6 +791,8 @@ else:
                 profile["in_followup_queue"] = False
                 profile["lead_idx"] = 0
                 profile["lead_opened_at"] = time.time()
+                profile["batch_version"] = batch_ver + 1
+                batch_ver = profile["batch_version"]
                 save_caller_backup(caller_name, profile)
                 st.rerun()
 
@@ -789,7 +800,7 @@ else:
             "Assigned Leads (One per line: Name, Phone)",
             value=profile.get("raw_leads", ""),
             height=130,
-            key=f"caller_batch_{current_slug}",
+            key=f"caller_batch_{current_slug}_v{batch_ver}",
         )
         if raw_leads != profile.get("raw_leads", ""):
             profile["raw_leads"] = raw_leads
@@ -859,7 +870,7 @@ else:
                 max_value=total_leads,
                 value=profile["lead_idx"] + 1,
                 label_visibility="collapsed",
-                key=f"jump_{current_slug}_{profile['lead_idx']}",
+                key=f"jump_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
             )
             if int(jump_num) - 1 != profile["lead_idx"]:
                 profile["lead_idx"] = int(jump_num) - 1
@@ -878,6 +889,7 @@ else:
             profile["lead_opened_at"] = time.time()
             if profile.get("master_leads"):
                 profile["raw_leads"] = profile["master_leads"]
+            profile["batch_version"] = int(profile.get("batch_version", 0)) + 1
             save_caller_backup(caller_name, profile)
             st.rerun()
 
@@ -899,6 +911,7 @@ else:
                 profile["lead_idx"] = 0
                 profile["in_followup_queue"] = True
                 profile["lead_opened_at"] = time.time()
+                profile["batch_version"] = int(profile.get("batch_version", 0)) + 1
                 save_caller_backup(caller_name, profile)
                 st.rerun()
         with fq_col2:
@@ -912,6 +925,7 @@ else:
                     profile["lead_idx"] = 0
                     profile["in_followup_queue"] = False
                     profile["lead_opened_at"] = time.time()
+                    profile["batch_version"] = int(profile.get("batch_version", 0)) + 1
                     save_caller_backup(caller_name, profile)
                     st.rerun()
 
@@ -920,13 +934,13 @@ else:
         lead_name = st.text_input(
             "Lead Name",
             value=default_name,
-            key=f"name_{current_slug}_{profile['lead_idx']}",
+            key=f"name_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
         )
     with e_col2:
         lead_phone = st.text_input(
             "Lead Phone Number",
             value=default_phone,
-            key=f"phone_{current_slug}_{profile['lead_idx']}",
+            key=f"phone_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
         )
     with e_col3:
         existing_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition")
@@ -934,7 +948,7 @@ else:
             "Call Disposition",
             options=DISPOSITION_OPTIONS,
             index=DISPOSITION_OPTIONS.index(existing_disp) if existing_disp in DISPOSITION_OPTIONS else 0,
-            key=f"disp_{current_slug}_{profile['lead_idx']}",
+            key=f"disp_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
         )
 
     existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
@@ -942,7 +956,7 @@ else:
         "Quick Call Note / Reply (Optional)",
         value=existing_note,
         placeholder="Example: 'Call cut', 'Busy till 6 PM', 'Requested SMC AI link'",
-        key=f"reply_{current_slug}_{profile['lead_idx']}",
+        key=f"reply_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
     )
 
     if total_leads > 0:
@@ -960,7 +974,7 @@ else:
                     btn_label,
                     use_container_width=True,
                     disabled=not has_performed_action,
-                    key=f"quick_disp_{current_slug}_{profile['lead_idx']}_{idx_b}",
+                    key=f"quick_disp_{current_slug}_v{batch_ver}_{profile['lead_idx']}_{idx_b}",
                 ):
                     quick_chosen_disp = disp_val
 
@@ -1099,7 +1113,7 @@ else:
             "Select Message Template",
             wa_keys,
             index=default_wa_idx,
-            key=f"wa_type_{current_slug}_{profile['lead_idx']}_{disp_select}",
+            key=f"wa_type_{current_slug}_v{batch_ver}_{profile['lead_idx']}_{disp_select}",
         )
         selected_wa_text = wa_messages[wa_type]
         st.code(selected_wa_text, language="text")
@@ -1130,7 +1144,7 @@ else:
                 if st.button(
                     "✅ WA Sent",
                     use_container_width=True,
-                    key=f"confirm_wa_{current_slug}_{profile['lead_idx']}",
+                    key=f"confirm_wa_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
                 ):
                     current_action_state["wa"] = True
                     save_caller_backup(caller_name, profile)
@@ -1147,7 +1161,7 @@ else:
             "Select Call Scenario",
             call_keys,
             index=default_call_idx,
-            key=f"call_type_{current_slug}_{profile['lead_idx']}_{disp_select}",
+            key=f"call_type_{current_slug}_v{batch_ver}_{profile['lead_idx']}_{disp_select}",
         )
         st.code(call_scripts[call_type], language="text")
 
@@ -1176,7 +1190,7 @@ else:
                 if st.button(
                     "✅ Call Done",
                     use_container_width=True,
-                    key=f"confirm_call_{current_slug}_{profile['lead_idx']}",
+                    key=f"confirm_call_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
                 ):
                     current_action_state["call"] = True
                     save_caller_backup(caller_name, profile)
