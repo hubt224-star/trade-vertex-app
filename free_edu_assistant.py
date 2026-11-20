@@ -9,11 +9,12 @@ import time
 import urllib.parse
 import urllib.request
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Market Metrix — Smart Calling & WA Helper", layout="wide")
 
 st.title("📈 Market Metrix — Lead Classifier, Calling & WA Helper")
-st.caption("Fast multi-caller lead dialer, mandatory Call/WA action lock, speed audit, and Admin live monitor.")
+st.caption("Fast multi-caller lead dialer, mandatory Call/WA action lock, live timer & speed audit, and Admin live monitor.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
@@ -248,7 +249,7 @@ def analyze_lead_reply(reply_text: str):
     busy_kw = ["busy", "baad", "kal", "sham", "abhi nahi", "later", "call back", "free hoke", "sunday", "weekend"]
     hot_kw = [
         "yes", "haan", "han", "link", "bhejo", "send", "join",
-        "kab hai", "timing", "interested", "sikha", "seekhna", "details"
+        "kab hai", "timing", "interested", "sikha", "seekhna", "details", "1"
     ]
     doubt_kw = [
         "free", "paisa", "paise", "fees", "charge", "kuch nhi aata",
@@ -825,12 +826,17 @@ else:
     due_followup_records = [
         r for r in profile["disposition_sheet"].values() if r.get("disposition") in FOLLOW_UP_STATUSES
     ]
+    caller_fast_skips = sum(
+        1 for r in profile["disposition_sheet"].values()
+        if r.get("fast_skip") or float(r.get("duration_sec", 10)) < FAST_SKIP_THRESHOLD_SEC
+    )
+    live_elapsed_sec = round(max(time.time() - float(profile.get("lead_opened_at", time.time())), 0.0), 1)
 
     if total_leads > 0:
         mode_tag = " [Follow-Up Queue]" if profile.get("in_followup_queue", False) else ""
         st.progress(
             done_count / total_leads,
-            text=f"[{caller_name} | {expected_auth['id']}{mode_tag}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1}",
+            text=f"[{caller_name} | {expected_auth['id']}{mode_tag}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1} | Timer: {live_elapsed_sec}s | Fast Skips: {caller_fast_skips}",
         )
 
     current_action_state = get_action_status(profile, profile["lead_idx"])
@@ -842,7 +848,7 @@ else:
             is_done = profile["lead_idx"] in profile["done_indices"]
             saved_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition", "")
             status_tag = f"✅ {saved_disp}" if saved_disp else ("✅ Done" if is_done else "📞 Pending")
-            st.markdown(f"**{status_tag} — Lead {profile['lead_idx'] + 1} of {total_leads}:** `{default_name}`")
+            st.markdown(f"**{status_tag} — Lead {profile['lead_idx'] + 1} of {total_leads}:** `{default_name}` (`⏱️ {live_elapsed_sec}s`)")
         else:
             st.markdown("**Active Lead:** Manual Mode")
 
@@ -929,6 +935,19 @@ else:
                     save_caller_backup(caller_name, profile)
                     st.rerun()
 
+    existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
+    lead_reply = st.text_input(
+        "Quick Call Note / Reply (Auto-Matches Template)",
+        value=existing_note,
+        placeholder="Type client reply or note like: '1', 'yes', 'busy', 'kal', 'fees', 'cut'",
+        key=f"reply_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
+    )
+    analysis = analyze_lead_reply(lead_reply)
+
+    auto_disp_target = analysis["disposition"] if analysis else None
+    existing_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition")
+    effective_disp = auto_disp_target or existing_disp or DISPOSITION_OPTIONS[0]
+
     e_col1, e_col2, e_col3 = st.columns([1.4, 1.4, 1.2])
     with e_col1:
         lead_name = st.text_input(
@@ -943,23 +962,16 @@ else:
             key=f"phone_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
         )
     with e_col3:
-        existing_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition")
         disp_select = st.selectbox(
             "Call Disposition",
             options=DISPOSITION_OPTIONS,
-            index=DISPOSITION_OPTIONS.index(existing_disp) if existing_disp in DISPOSITION_OPTIONS else 0,
-            key=f"disp_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
+            index=DISPOSITION_OPTIONS.index(effective_disp) if effective_disp in DISPOSITION_OPTIONS else 0,
+            key=f"disp_{current_slug}_v{batch_ver}_{profile['lead_idx']}_{effective_disp}",
         )
 
-    existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
-    lead_reply = st.text_input(
-        "Quick Call Note / Reply (Optional)",
-        value=existing_note,
-        placeholder="Example: 'Call cut', 'Busy till 6 PM', 'Requested SMC AI link'",
-        key=f"reply_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
-    )
-
     if total_leads > 0:
+        if live_elapsed_sec < FAST_SKIP_THRESHOLD_SEC:
+            st.caption(f"⚡ Speed Audit: Lead opened {live_elapsed_sec}s ago (saving under {FAST_SKIP_THRESHOLD_SEC:.0f}s flags as Fast Skip).")
         if not has_performed_action:
             st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Dial** / **✅ Call Done** ya **📲 Open WhatsApp** / **✅ WA Sent** par click karein.")
         else:
@@ -995,16 +1007,15 @@ else:
             )
             st.rerun()
 
-    analysis = analyze_lead_reply(lead_reply)
     if analysis:
         if analysis["color"] == "success":
-            st.success(f"**Hint:** {analysis['status']} — {analysis['action']}")
+            st.success(f"**Auto-Matched ({analysis['disposition']}):** {analysis['status']} — {analysis['action']}")
         elif analysis["color"] == "warning":
-            st.warning(f"**Hint:** {analysis['status']} — {analysis['action']}")
+            st.warning(f"**Auto-Matched ({analysis['disposition']}):** {analysis['status']} — {analysis['action']}")
         elif analysis["color"] == "error":
-            st.error(f"**Hint:** {analysis['status']} — {analysis['action']}")
+            st.error(f"**Auto-Matched ({analysis['disposition']}):** {analysis['status']} — {analysis['action']}")
         else:
-            st.info(f"**Hint:** {analysis['status']} — {analysis['action']}")
+            st.info(f"**Auto-Matched ({analysis['disposition']}):** {analysis['status']} — {analysis['action']}")
 
     if next_clicked and total_leads > 0:
         commit_lead_disposition(
@@ -1033,46 +1044,46 @@ else:
         "Interested (Seat Confirmation & Hook)": (
             f"Namaste *{lead_name}* ji 👋\n"
             f"*{brand_name}* se baat kar raha hoon.\n\n"
-            f"Trade karte waqt agar kabhi chart samajhne ya entry/exit plan karne mein confusion hoti hai, toh aaj ke *{topic}* ({class_time}) mein aapko *SMC AI & Algo Helper Tools* ka practical overview bhi milega — jo *Order Blocks, FVG aur market structure* ko aasaan dhang se scan karne mein madad karte hain.\n\n"
-            f"🤖 *SMC AI & Algo Tools + Live Chart Logic* (100% Free Educational Session — Zero tips)"
+            f"Aksar chart par signal/breakout dikhte hi entry le lete hain aur wahin market reverse ho jata hai — ya trade lete waqt confusion rehti hai ki setup valid hai ya trap?\n\n"
+            f"Aaj *{class_time}* ke *{topic}* mein hum live dekhenge ki *SMC AI & Algo Helper Tools* aur *market structure* chart samajhne mein kaise help karte hain (100% Free Educational Session — Zero tips).\n"
             f"{link_block}"
-            f"Apni seat aur tool details ke liye bas *YES* reply karein 👇"
+            f"Detail aur link ke liye bas *1* reply karein 👇"
         ),
         "Follow-Up: Limited Seat Reminder": (
             f"Namaste *{lead_name}* ji ⏰\n"
-            f"*{brand_name}* se quick reminder — aaj ke *{topic}* ({class_time}) mein kuch hi slots bachi hain.\n\n"
-            f"Is session mein hum *SMC AI & algo-assisted chart analysis* dikhayenge taaki trade lete waqt aapko guesswork aur confusion kam pade.\n"
+            f"*{brand_name}* se quick reminder — aaj *{class_time}* wale *{topic}* mein kuch hi seats bachi hain.\n\n"
+            f"Jismein *SMC AI & algo-assisted chart analysis* se guesswork kam karne ka practical logic dikhaya jayega.\n"
             f"{link_block}"
-            f"Confirm karne ke liye abhi *YES* reply karein 👇"
+            f"Join karna ho toh abhi *1* reply karein 👇"
         ),
         "Not Picked / Switched Off (Curiosity Hook)": (
             f"Hi *{lead_name}* ji 👋\n"
             f"Abhi *{brand_name}* se call kiya tha par connect nahi ho paya.\n\n"
-            f"Agar aap chart par *Smart Money footprints* samajhna chahte hain aur saath mein *SMC AI & Algo Helper Tools* dekhna chahte hain jo trade setup samajhne mein kaam aate hain, toh *{topic}* ({class_time}) bilkul *FREE* hai.\n"
+            f"Trade lete waqt agar chart samajhne mein confusion hoti hai, toh aaj *{class_time}* mein *SMC AI & Algo Helper Tools* + *SMC chart logic* ka *100% FREE* session hai.\n"
             f"{link_block}"
-            f"Kya main aapki seat reserve kar doon? Bas *YES* likh kar bhejein."
+            f"Details bhejna ho toh bas *YES* likh kar bhejein."
         ),
         "Call Cut (Short Value Hook)": (
-            f"Hi *{lead_name}* ji, abhi *{brand_name}* se call connect hua tha par shayad network ki wajah se cut ho gaya.\n\n"
-            f"Bas 10 second ki update: *{topic}* ({class_time}) mein hum *SMC AI tools + live market structure* dikha rahe hain taaki aapko trade samajhne mein aasani ho — *100% Free Educational Session*.\n"
+            f"Hi *{lead_name}* ji, *{brand_name}* se quick update ⚡\n\n"
+            f"Aaj *{class_time}* ke *{topic}* mein hum *SMC AI tools + live chart structure* dikha rahe hain taaki aapko trade setups samajhne mein aasani ho (*100% Free Educational Session*).\n"
             f"{link_block}"
-            f"Details chahiye toh *YES* reply karein 👍"
+            f"Link chahiye toh *1* reply karein 👍"
         ),
         "Busy (Quick Evening Reminder Hook)": (
             f"Koi baat nahi *{lead_name}* ji, abhi aap busy honge 👍\n\n"
-            f"Bas itna share karna tha — *{brand_name}* ki *{topic}* ({class_time}) bilkul *FREE* hai, jismein aapko *SMC AI & algo signal tools* aur *price action logic* ka clear breakdown milega.\n"
+            f"Bas ek line mein: *{brand_name}* ka *{topic}* ({class_time}) bilkul *FREE* hai, jismein *SMC AI & algo helper tools* ke zariye chart samajhna aasaan dikhaya jayega.\n"
             f"{link_block}"
-            f"Free hote hi *YES* reply kar dijiyega, main reminder bhej dunga."
+            f"Free hokar *YES* reply kar dijiyega, main detail bhej dunga."
         ),
         "Doubt: Is This Really Free? (Zero-Risk Hook)": (
             f"Bilkul *{lead_name}* ji — yeh *{topic}* *100% FREE* hai, koi hidden fee ya paid tip group nahi hai.\n\n"
-            f"*{brand_name}* ka aim simple hai: pehle aap live dekhein ki *SMC AI & algo tools* kaise chart aur trade setups ko samajhne mein help karte hain — phir khud decide karein.\n"
+            f"Pehle aap live dekhein ki *SMC AI & algo tools* chart aur trade logic samajhne mein kaise kaam aate hain — uske baad aap khud decide karein.\n"
             f"{link_block}"
-            f"Aaj ({class_time}) join karne ke liye *YES* reply karein."
+            f"Aaj ({class_time}) ke liye bas *1* reply karein."
         ),
         "Not Interested (Polite Door-Open Close)": (
             f"Thank you *{lead_name}* ji aapke samay ke liye 🙏\n"
-            f"Agar future mein kabhi *SMC AI tools, algo chart logic aur free stock market learning* try karne ka mann bane, toh *{brand_name}* par zaroor message kijiyega. Have a great day!"
+            f"Agar kabhi *SMC AI tools, algo chart clarity aur free learning* dekhne ka mann ho, toh *{brand_name}* par zaroor message kijiyega. Have a great day!"
         ),
     }
 
@@ -1089,7 +1100,7 @@ else:
             f"\"Nahi {lead_name} ji, yeh *{topic}* 100% free educational session hai, koi tip ya zor-zabardasti nahi hai, aur session mein *SMC AI & algo tool* ka demo/overview bhi share kiya jayega. Main abhi aapko WhatsApp par details bhej raha hoon.\""
         ),
         "Closing / WhatsApp Push": (
-            f"\"Great {lead_name} ji! Main abhi aapko {brand_name} se WhatsApp par {class_time} aur *SMC AI / Algo* session ki detail{link_line_call} bhej raha hoon — wahan 'YES' reply kar dijiyega taaki aapki seat lock ho jaye.\""
+            f"\"Great {lead_name} ji! Main abhi aapko {brand_name} se WhatsApp par {class_time} aur *SMC AI / Algo* session ki detail{link_line_call} bhej raha hoon — wahan '1' ya 'YES' reply kar dijiyega taaki aapki seat lock ho jaye.\""
         ),
     }
 
@@ -1121,34 +1132,55 @@ else:
         if len(formatted_num) >= 10:
             encoded_msg = urllib.parse.quote(selected_wa_text)
             wa_url = f"https://wa.me/{formatted_num}?text={encoded_msg}"
-            wa_col_a, wa_col_b = st.columns([2.2, 1])
-            with wa_col_a:
-                st.markdown(
-                    f"""
-                    <a href="{wa_url}" target="market_metrix_wa" rel="noopener" style="
-                        display: inline-block;
-                        width: 100%;
-                        text-align: center;
-                        background-color: #2563eb;
-                        color: #ffffff;
-                        font-weight: 600;
-                        padding: 0.6rem 1rem;
-                        border-radius: 0.5rem;
-                        text-decoration: none;
-                        margin-top: 0.25rem;
-                    ">📲 Open WhatsApp ({display_num})</a>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with wa_col_b:
-                if st.button(
-                    "✅ WA Sent",
-                    use_container_width=True,
-                    key=f"confirm_wa_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
-                ):
-                    current_action_state["wa"] = True
-                    save_caller_backup(caller_name, profile)
-                    st.rerun()
+            js_msg = json.dumps(selected_wa_text)
+            js_wa_url = json.dumps(wa_url)
+            components.html(
+                f"""
+                <div style="display:flex; gap:8px; margin-top:4px; font-family:sans-serif;">
+                    <button id="copyBtn_{current_slug}_{profile['lead_idx']}" onclick="copyWaMsg()" style="
+                        flex:1; background:#334155; color:#fff; border:none; border-radius:8px;
+                        padding:10px 12px; font-weight:600; cursor:pointer;
+                    ">📋 Copy Text</button>
+                    <a href={js_wa_url} target="market_metrix_wa" rel="noopener" style="
+                        flex:1.6; text-align:center; background:#2563eb; color:#fff; border-radius:8px;
+                        padding:10px 12px; font-weight:600; text-decoration:none;
+                    ">📲 Open WA ({display_num})</a>
+                </div>
+                <script>
+                function copyWaMsg() {{
+                    const txt = {js_msg};
+                    const btn = document.getElementById("copyBtn_{current_slug}_{profile['lead_idx']}");
+                    if (navigator.clipboard && navigator.clipboard.writeText) {{
+                        navigator.clipboard.writeText(txt).then(() => {{
+                            btn.innerText = "✅ Copied!";
+                            setTimeout(() => btn.innerText = "📋 Copy Text", 1500);
+                        }}).catch(() => fallbackCopy(txt, btn));
+                    }} else {{
+                        fallbackCopy(txt, btn);
+                    }}
+                }}
+                function fallbackCopy(txt, btn) {{
+                    const ta = document.createElement("textarea");
+                    ta.value = txt;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(ta);
+                    btn.innerText = "✅ Copied!";
+                    setTimeout(() => btn.innerText = "📋 Copy Text", 1500);
+                }}
+                </script>
+                """,
+                height=52,
+            )
+            if st.button(
+                "✅ Mark WA Sent",
+                use_container_width=True,
+                key=f"confirm_wa_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
+            ):
+                current_action_state["wa"] = True
+                save_caller_backup(caller_name, profile)
+                st.rerun()
         else:
             st.caption("Enter a 10-digit phone number to generate a direct WhatsApp link.")
 
