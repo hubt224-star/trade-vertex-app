@@ -18,6 +18,7 @@ st.caption("Fast multi-caller lead dialer, mandatory Call/WA action lock, speed 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
 FAST_SKIP_THRESHOLD_SEC = 5.0  # Agar 5 second se kam mein lead save ho toh Fast Skip flag hoga
+FRESH_START_FROM_ZERO = True  # Naye deploy/run par purana local JSON caller data load na ho, 0 se start ho
 
 
 def get_default_webhook_url() -> str:
@@ -42,16 +43,17 @@ DEFAULT_CALLER_AUTH_MAP = {
 
 DISPOSITION_OPTIONS = [
     "Interested",
+    "Follow-Up",
     "Not Picked / Switched Off",
     "Call Cut",
     "Busy",
     "Doubt / Beginner",
-    "Follow-Up",
     "Not Interested",
 ]
 
 QUICK_DISPOSITIONS = [
     ("✅ Interested", "Interested"),
+    ("🔁 Follow-Up", "Follow-Up"),
     ("📵 Not Picked", "Not Picked / Switched Off"),
     ("✂️ Call Cut", "Call Cut"),
     ("⏳ Busy", "Busy"),
@@ -68,21 +70,21 @@ FOLLOW_UP_STATUSES = {
 
 DISPOSITION_TO_WA_KEY = {
     "Interested": "Interested (Seat Confirmation & Hook)",
+    "Follow-Up": "Follow-Up: Limited Seat Reminder",
     "Not Picked / Switched Off": "Not Picked / Switched Off (Curiosity Hook)",
     "Call Cut": "Call Cut (Short Value Hook)",
     "Busy": "Busy (Quick Evening Reminder Hook)",
     "Doubt / Beginner": "Doubt: Is This Really Free? (Zero-Risk Hook)",
-    "Follow-Up": "Follow-Up: Limited Seat Reminder",
     "Not Interested": "Not Interested (Polite Door-Open Close)",
 }
 
 DISPOSITION_TO_CALL_KEY = {
     "Interested": "Closing / WhatsApp Push",
+    "Follow-Up": "Opening (First 20 Seconds)",
     "Not Picked / Switched Off": "Opening (First 20 Seconds)",
     "Call Cut": "Opening (First 20 Seconds)",
     "Busy": "Opening (First 20 Seconds)",
     "Doubt / Beginner": "If Asked: 'Will There Be Any Fees?'",
-    "Follow-Up": "Opening (First 20 Seconds)",
     "Not Interested": "Opening (First 20 Seconds)",
 }
 
@@ -375,7 +377,7 @@ def empty_profile(default_leads_text: str = ""):
         "done_indices": set(),
         "synced_indices": set(),
         "disposition_sheet": {},
-        "action_log": {},  # {idx_str: {"call": bool, "wa": bool}}
+        "action_log": {},
         "lead_opened_at": time.time(),
         "raw_leads": default_leads_text,
         "master_leads": default_leads_text,
@@ -406,6 +408,8 @@ def save_caller_backup(caller_name: str, state_obj: dict):
 
 
 def load_caller_backup(caller_name: str):
+    if FRESH_START_FROM_ZERO and not st.session_state.get("allow_local_backup_load", False):
+        return None
     backup_path = get_backup_file(caller_name)
     if not os.path.exists(backup_path):
         return None
@@ -428,6 +432,20 @@ def load_caller_backup(caller_name: str):
         }
     except Exception:
         return None
+
+
+def reset_all_callers_to_zero(slot_list: list):
+    st.session_state.verified_profiles = {}
+    st.session_state.pop("live_sheet_cache", None)
+    for slot_name in slot_list:
+        s_slug = safe_caller_slug(slot_name)
+        st.session_state.verified_profiles[s_slug] = empty_profile("")
+        backup_path = get_backup_file(slot_name)
+        if os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except Exception:
+                pass
 
 
 def get_action_status(profile_obj: dict, idx: int) -> dict:
@@ -514,7 +532,6 @@ if "verified_profiles" not in st.session_state:
 caller_auth_map = st.session_state.caller_auth_map
 slot_names = list(caller_auth_map.keys())
 
-# Restore login credentials from query params across refresh / new tab until Logout
 qp = st.query_params
 qp_slot = str(qp.get("slot", "")).strip()
 qp_cid = str(qp.get("cid", "")).strip().upper()
@@ -609,6 +626,11 @@ with st.sidebar:
 
     if is_admin_verified:
         st.success("Admin access granted.")
+
+        if st.button("🗑️ Reset All Callers Data to 0", use_container_width=True, key="admin_zero_all_btn"):
+            reset_all_callers_to_zero(slot_names)
+            st.success("All callers data reset to 0.")
+            st.rerun()
 
         with st.expander("🔑 Manage Caller ID & PIN", expanded=True):
             manage_slot = st.selectbox(
@@ -735,7 +757,6 @@ else:
 
     profile = st.session_state.verified_profiles[current_slug]
 
-    # Capture Call/WA click events passed via query params if triggered
     if qp_act in {"call", "wa"} and qp_act_idx.isdigit():
         act_obj = get_action_status(profile, int(qp_act_idx))
         act_obj[qp_act] = True
@@ -926,7 +947,7 @@ else:
 
     if total_leads > 0:
         if not has_performed_action:
-            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Call Now** ya **📲 Send on WhatsApp** par click karein.")
+            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Dial** / **✅ Call Done** ya **📲 Open WhatsApp** / **✅ WA Sent** par click karein.")
         else:
             st.success(f"✅ **Action Verified:** `{format_action_label(current_action_state)}` — ab aap disposition save kar sakte hain.")
 
@@ -1003,6 +1024,13 @@ else:
             f"{link_block}"
             f"Apni seat confirm karne ke liye bas *YES* reply karein 👇"
         ),
+        "Follow-Up: Limited Seat Reminder": (
+            f"Namaste *{lead_name}* ji ⏰\n"
+            f"*{brand_name}* se quick reminder — aaj ke *{topic}* ({class_time}) mein kuch hi slots bachi hain.\n\n"
+            f"Agar aap aaj *live chart breakdown aur smart money concepts* seekhna chahte hain toh miss mat kijiyega.\n"
+            f"{link_block}"
+            f"Confirm karne ke liye abhi *YES* reply karein 👇"
+        ),
         "Not Picked / Switched Off (Curiosity Hook)": (
             f"Hi *{lead_name}* ji 👋\n"
             f"Abhi *{brand_name}* se call kiya tha par connect nahi ho paya.\n\n"
@@ -1027,13 +1055,6 @@ else:
             f"*{brand_name}* ka aim simple hai: pehle aap live chart par *real price action logic* dekhein aur khud decide karein ki market kaise kaam karta hai.\n"
             f"{link_block}"
             f"Aaj ({class_time}) join karne ke liye *YES* reply karein."
-        ),
-        "Follow-Up: Limited Seat Reminder": (
-            f"Namaste *{lead_name}* ji ⏰\n"
-            f"*{brand_name}* se quick reminder — aaj ke *{topic}* ({class_time}) mein kuch hi slots bachi hain.\n\n"
-            f"Agar aap aaj *live chart breakdown aur smart money concepts* seekhna chahte hain toh miss mat kijiyega.\n"
-            f"{link_block}"
-            f"Confirm karne ke liye abhi *YES* reply karein 👇"
         ),
         "Not Interested (Polite Door-Open Close)": (
             f"Thank you *{lead_name}* ji aapke samay ke liye 🙏\n"
@@ -1171,14 +1192,15 @@ else:
 
     if sheet_rows:
         int_count = sum(1 for r in sheet_rows if r["disposition"] == "Interested")
+        fu_exact_count = sum(1 for r in sheet_rows if r["disposition"] == "Follow-Up")
         not_int_count = sum(1 for r in sheet_rows if r["disposition"] == "Not Interested")
-        fu_count = sum(1 for r in sheet_rows if r["disposition"] in FOLLOW_UP_STATUSES)
+        pending_retry_count = sum(1 for r in sheet_rows if r["disposition"] in FOLLOW_UP_STATUSES)
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Logged", len(sheet_rows))
         m2.metric("Interested", int_count)
-        m3.metric("Not Interested", not_int_count)
-        m4.metric("Follow-Up / Cut / Busy", fu_count)
+        m3.metric("Follow-Up", fu_exact_count)
+        m4.metric("Not Interested", not_int_count)
 
         filter_disp = st.selectbox(
             "Filter Disposition",
@@ -1262,7 +1284,10 @@ if is_admin_verified:
             records = list(disp_map.values())
 
             c_int = sum(1 for r in records if r.get("disposition") == "Interested")
-            c_fu = sum(1 for r in records if r.get("disposition") in FOLLOW_UP_STATUSES)
+            c_fu = sum(1 for r in records if r.get("disposition") == "Follow-Up")
+            c_cut_busy_doubt = sum(
+                1 for r in records if r.get("disposition") in {"Not Picked / Switched Off", "Call Cut", "Busy", "Doubt / Beginner"}
+            )
             c_not_int = sum(1 for r in records if r.get("disposition") == "Not Interested")
 
             c_call_cnt = sum(1 for r in records if "Call" in str(r.get("action_taken", "")))
@@ -1270,7 +1295,7 @@ if is_admin_verified:
             fast_skips = sum(1 for r in records if r.get("fast_skip") or float(r.get("duration_sec", 10)) < FAST_SKIP_THRESHOLD_SEC)
 
             durations = [float(r.get("duration_sec", 0)) for r in records if r.get("duration_sec") is not None]
-            avg_sec = f"{round(sum(durations) / len(durations), 1)}s" if durations else "—"
+            avg_sec = f"{round(sum(durations) / len(durations), 1)}s" if durations else "0s"
 
             total_team_interested += c_int
             total_team_followup += c_fu
@@ -1283,7 +1308,8 @@ if is_admin_verified:
                 "ID": auth_info["id"],
                 "Progress": f"{len(prof.get('done_indices', set()))}/{p_total}",
                 "🔥 Interested": c_int,
-                "🔁 Follow-Up / Busy / Cut": c_fu,
+                "🔁 Follow-Up": c_fu,
+                "⏳ Cut/Busy/Doubt": c_cut_busy_doubt,
                 "❌ Not Int.": c_not_int,
                 "📞 Calls": c_call_cnt,
                 "💬 WAs": c_wa_cnt,
@@ -1298,20 +1324,21 @@ if is_admin_verified:
                 "ID": auth_info["id"],
                 "Progress": "0/0",
                 "🔥 Interested": 0,
-                "🔁 Follow-Up / Busy / Cut": 0,
+                "🔁 Follow-Up": 0,
+                "⏳ Cut/Busy/Doubt": 0,
                 "❌ Not Int.": 0,
                 "📞 Calls": 0,
                 "💬 WAs": 0,
-                "⏱️ Avg Time": "—",
+                "⏱️ Avg Time": "0s",
                 "⚠️ Fast Skips (<5s)": 0,
-                "Current Lead": "Not Started",
-                "Last Status": "—",
+                "Current Lead": "0",
+                "Last Status": "0",
             })
 
     tm1, tm2, tm3, tm4 = st.columns(4)
     tm1.metric("Team Total Logged", total_team_logged)
     tm2.metric("🔥 Team Interested", total_team_interested)
-    tm3.metric("🔁 Team Follow-Up / Busy / Cut", total_team_followup)
+    tm3.metric("🔁 Team Follow-Up", total_team_followup)
     tm4.metric("❌ Team Not Interested", total_team_not_int)
 
     st.dataframe(local_team_rows, use_container_width=True, hide_index=True)
