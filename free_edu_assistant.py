@@ -9,10 +9,10 @@ import urllib.parse
 import urllib.request
 import streamlit as st
 
-st.set_page_config(page_title="Smart Calling & WA Helper", layout="wide")
+st.set_page_config(page_title="Market Metrix — Smart Calling & WA Helper", layout="wide")
 
-st.title("📚 Smart Lead Classifier, Calling & WA Helper")
-st.caption("Fast, lightweight multi-caller lead dialer, one-tap dispositions, follow-up queue, and live WhatsApp templates.")
+st.title("📈 Market Metrix — Lead Classifier, Calling & WA Helper")
+st.caption("Fast, lightweight multi-caller lead dialer, one-tap dispositions, follow-up queue, and high-converting WhatsApp templates.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
@@ -65,13 +65,13 @@ FOLLOW_UP_STATUSES = {
 }
 
 DISPOSITION_TO_WA_KEY = {
-    "Interested": "Interested (Session Details & Onboarding)",
-    "Not Picked / Switched Off": "Not Picked / Switched Off",
-    "Call Cut": "Call Cut (Quick Follow-Up)",
-    "Busy": "Busy (Call Back Later)",
-    "Doubt / Beginner": "Doubt: Is This Really Free?",
-    "Follow-Up": "Follow-Up: Will Check Later / Connect Tomorrow",
-    "Not Interested": "Not Interested (Polite Close)",
+    "Interested": "Interested (Seat Confirmation & Hook)",
+    "Not Picked / Switched Off": "Not Picked / Switched Off (Curiosity Hook)",
+    "Call Cut": "Call Cut (Short Value Hook)",
+    "Busy": "Busy (Quick Evening Reminder Hook)",
+    "Doubt / Beginner": "Doubt: Is This Really Free? (Zero-Risk Hook)",
+    "Follow-Up": "Follow-Up: Limited Seat Reminder",
+    "Not Interested": "Not Interested (Polite Door-Open Close)",
 }
 
 DISPOSITION_TO_CALL_KEY = {
@@ -265,14 +265,14 @@ def analyze_lead_reply(reply_text: str):
             "status": "✂️ Call Cut",
             "disposition": "Call Cut",
             "color": "warning",
-            "action": "Short WhatsApp drop karein aur thodi der baad retry karein.",
+            "action": "Short WhatsApp hook drop karein aur thodi der baad retry karein.",
         }
     if any(k in text for k in busy_kw):
         return {
             "status": "⏳ Busy / Follow-Up",
             "disposition": "Busy",
             "color": "info",
-            "action": "Abhi push na karein — WhatsApp par short detail chhod kar baad mein follow up karein.",
+            "action": "Abhi push na karein — WhatsApp par short value hook chhod kar baad mein follow up karein.",
         }
     if any(k in text for k in hot_kw):
         return {
@@ -477,7 +477,7 @@ caller_auth_map = st.session_state.caller_auth_map
 
 with st.sidebar:
     st.header("1. Caller Login & Session Settings")
-    brand_name = st.text_input("Team / Desk Name", value="Sales & Learning Desk")
+    brand_name = st.text_input("Brand / Desk Name", value="Market Metrix")
 
     selected_preset = st.selectbox(
         "Caller Slot",
@@ -505,9 +505,9 @@ with st.sidebar:
     topic = st.selectbox(
         "Session Topic",
         [
-            "Free Basics & Chart Reading Class",
-            "Free Price Action & Market Structure Session",
-            "Free Beginner Live Class",
+            "Smart Money & Chart Reading Masterclass",
+            "Price Action & Market Structure Live Session",
+            "Zero-to-Pro Stock Market Foundation Class",
         ],
     )
     class_time = st.text_input("Session Timing / Offer Line", value="Aaj sham 8 baje ki free live class")
@@ -767,7 +767,6 @@ else:
                     pass
             st.rerun()
 
-    # Follow-Up Retry Queue bar
     if due_followup_records or profile.get("in_followup_queue", False):
         fq_col1, fq_col2 = st.columns([1.6, 1.4])
         with fq_col1:
@@ -830,7 +829,6 @@ else:
         key=f"reply_{current_slug}_{profile['lead_idx']}",
     )
 
-    # One-Tap Quick Disposition buttons for fast calling
     if total_leads > 0:
         st.caption("One-Tap Quick Save & Next:")
         q_btns = st.columns(len(QUICK_DISPOSITIONS))
@@ -892,67 +890,70 @@ else:
     st.divider()
 
     clean_session_link = session_link.strip()
-    link_line_wa = f"\n🔗 Session Link: {clean_session_link}\n" if clean_session_link else "\n"
+    link_block = f"\n🔗 *Direct Join Link:* {clean_session_link}\n" if clean_session_link else "\n"
     link_line_call = f" Link ({clean_session_link}) abhi WhatsApp par bhej raha hoon." if clean_session_link else ""
 
     wa_messages = {
-        "Interested (Session Details & Onboarding)": (
-            f"Namaste {lead_name} ji 👋\n"
-            f"{brand_name} se baat kar raha hoon.\n\n"
-            f"Aapke interest ke liye thank you! Humne aapke liye *{topic}* rakhi hai ({class_time}) — yeh *100% free educational session* hai (koi tip ya paid signal nahi)."
-            f"{link_line_wa}"
-            f"Confirm karne ke liye *YES* reply karein, main aapko reminder bhej deta hoon."
+        "Interested (Seat Confirmation & Hook)": (
+            f"Namaste *{lead_name}* ji 👋\n"
+            f"*{brand_name}* se baat kar raha hoon.\n\n"
+            f"90% retail traders chart ke galat signals dekh kar trap hote hain — aaj ke *{topic}* ({class_time}) mein aap live dekhenge ki *Big Players / Smart Money* chart par entry aur exit kaise plan karte hain.\n\n"
+            f"✅ *100% Free Practical Educational Session* (Zero tips, pure chart logic)"
+            f"{link_block}"
+            f"Apni seat confirm karne ke liye bas *YES* reply karein 👇"
         ),
-        "Not Picked / Switched Off": (
-            f"Hi {lead_name} ji, abhi {brand_name} se call kiya tha par connect nahi ho paya.\n\n"
-            f"Hum *{topic}* ({class_time}) ke liye 100% free educational guidance de rahe hain."
-            f"{link_line_wa}"
-            f"Jab free hon toh batayein, kya main aapko session ki details yahan bhej dun?"
+        "Not Picked / Switched Off (Curiosity Hook)": (
+            f"Hi *{lead_name}* ji 👋\n"
+            f"Abhi *{brand_name}* se call kiya tha par connect nahi ho paya.\n\n"
+            f"Agar aap stock market mein *bina kisi paid tip ke khud chart read karna* seekhna chahte hain, toh humne aapke liye *{topic}* ({class_time}) rakhi hai — bilkul *FREE*.\n"
+            f"{link_block}"
+            f"Kya main aapki seat reserve kar doon? Bas *YES* likh kar bhejein."
         ),
-        "Call Cut (Quick Follow-Up)": (
-            f"Hi {lead_name} ji, abhi {brand_name} se call connect hua tha par shayad network ki wajah se cut ho gaya.\n\n"
-            f"Humne aapke liye *{topic}* ({class_time}) rakhi hai jo bilkul *100% free educational class* hai."
-            f"{link_line_wa}"
-            f"Agar aap details chahte hain toh *YES* likh kar reply karein."
+        "Call Cut (Short Value Hook)": (
+            f"Hi *{lead_name}* ji, abhi *{brand_name}* se call connect hua tha par shayad network ki wajah se cut ho gaya.\n\n"
+            f"Bas 10 second ki update: *{topic}* ({class_time}) mein hum *live market structure aur operator footprints* samjha rahe hain — *100% Free Educational Session*.\n"
+            f"{link_block}"
+            f"Details chahiye toh *YES* reply karein 👍"
         ),
-        "Busy (Call Back Later)": (
-            f"Koi baat nahi {lead_name} ji 👍\n"
-            f"Jab aap free hon tab aaram se dekh lijiyega. *{topic}* ({class_time}) bilkul *100% free educational session* hai."
-            f"{link_line_wa}"
-            f"Free hote hi *YES* reply kar dijiyega, main join detail bhej dunga."
+        "Busy (Quick Evening Reminder Hook)": (
+            f"Koi baat nahi *{lead_name}* ji, abhi aap busy honge 👍\n\n"
+            f"Bas itna share karna tha — *{brand_name}* ki *{topic}* ({class_time}) bilkul *FREE* hai, jismein aap *support-resistance se aage badh kar real institutional price action* seekhenge.\n"
+            f"{link_block}"
+            f"Free hote hi *YES* reply kar dijiyega, main reminder bhej dunga."
         ),
-        "Doubt: Is This Really Free?": (
-            f"Bilkul {lead_name} ji, yeh *{topic}* learning & awareness ke liye *100% free* hai.\n\n"
-            f"Hamara focus sirf concepts samjhana hai taaki aap khud market ko better samajh sakein."
-            f"{link_line_wa}"
-            f"Kya main aapko {class_time} ki detail bhej dun?"
+        "Doubt: Is This Really Free? (Zero-Risk Hook)": (
+            f"Bilkul *{lead_name}* ji — yeh *{topic}* *100% FREE* hai, koi hidden fee ya paid tip group nahi hai.\n\n"
+            f"*{brand_name}* ka aim simple hai: pehle aap live chart par *real price action logic* dekhein aur khud decide karein ki market kaise kaam karta hai.\n"
+            f"{link_block}"
+            f"Aaj ({class_time}) join karne ke liye *YES* reply karein."
         ),
-        "Follow-Up: Will Check Later / Connect Tomorrow": (
-            f"Namaste {lead_name} ji 👍\n"
-            f"Reminder ke liye message kar raha hoon — *{topic}* ({class_time}) ke liye aapki slot reserve hai."
-            f"{link_line_wa}"
-            f"Join karne ke liye *YES* reply kar dein."
+        "Follow-Up: Limited Seat Reminder": (
+            f"Namaste *{lead_name}* ji ⏰\n"
+            f"*{brand_name}* se quick reminder — aaj ke *{topic}* ({class_time}) mein kuch hi slots bachi hain.\n\n"
+            f"Agar aap aaj *live chart breakdown aur smart money concepts* seekhna chahte hain toh miss mat kijiyega.\n"
+            f"{link_block}"
+            f"Confirm karne ke liye abhi *YES* reply karein 👇"
         ),
-        "Not Interested (Polite Close)": (
-            f"Thank you {lead_name} ji aapke samay ke liye 🙏\n"
-            f"Agar future mein kabhi free educational session join karna chahein toh zaroor batayein. Have a great day!"
+        "Not Interested (Polite Door-Open Close)": (
+            f"Thank you *{lead_name}* ji aapke samay ke liye 🙏\n"
+            f"Agar future mein kabhi *free stock market chart reading aur price action* seekhne ka mann bane, toh *{brand_name}* par zaroor message kijiyega. Have a great day!"
         ),
     }
 
     call_scripts = {
         "Opening (First 20 Seconds)": (
-            f"\"Hello {lead_name} ji, namaste! Main {brand_name} se bol raha hoon. Aapne market learning ke liye enquiry ki thi — "
-            f"hum *{topic}* kara rahe hain jo bilkul free educational class hai. Kya aap abhi 30 second baat kar sakte hain?\""
+            f"\"Hello {lead_name} ji, namaste! Main {brand_name} se bol raha hoon. Aapne stock market learning ke liye enquiry ki thi — "
+            f"aaj hum *{topic}* kara rahe hain jismein live chart par dikhayenge ki big players kaise move karte hain. Bilkul free educational class hai — kya aap 30 second baat kar sakte hain?\""
         ),
         "If Asked: 'I Don't Know Anything About This'": (
-            f"\"Bilkul koi dikkat nahi {lead_name} ji, yeh session shuruat se seekhne walon ke liye hi hai — bilkul simple bhasha mein. "
-            f"Main aapko WhatsApp par short detail bhej deta hoon, pehle wahan dekh lijiyega.\""
+            f"\"Bilkul koi dikkat nahi {lead_name} ji, yeh session zero se shuru karne walon ke liye hi design kiya gaya hai — bilkul simple Hindi mein. "
+            f"Main aapko {brand_name} se WhatsApp par short detail bhej deta hoon, pehle wahan dekh lijiyega.\""
         ),
         "If Asked: 'Will There Be Any Fees?'": (
-            f"\"Nahi {lead_name} ji, yeh *{topic}* learning ke liye free hai. Main abhi aapko WhatsApp par exact details bhej raha hoon, aap khud check kar lijiyega.\""
+            f"\"Nahi {lead_name} ji, yeh *{topic}* 100% free educational session hai, koi tip ya charge nahi hai. Main abhi aapko WhatsApp par exact details bhej raha hoon, aap khud check kar lijiyega.\""
         ),
         "Closing / WhatsApp Push": (
-            f"\"Great {lead_name} ji! Main abhi aapko WhatsApp par {class_time} ki detail{link_line_call} bhej raha hoon — wahan 'YES' bhej dijiyega taaki aapko reminder mil jaye.\""
+            f"\"Great {lead_name} ji! Main abhi aapko {brand_name} se WhatsApp par {class_time} ki detail{link_line_call} bhej raha hoon — wahan 'YES' reply kar dijiyega taaki aapki seat lock ho jaye.\""
         ),
     }
 
