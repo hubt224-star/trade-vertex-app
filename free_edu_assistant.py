@@ -13,10 +13,11 @@ import streamlit as st
 st.set_page_config(page_title="Market Metrix — Smart Calling & WA Helper", layout="wide")
 
 st.title("📈 Market Metrix — Lead Classifier, Calling & WA Helper")
-st.caption("Fast multi-caller lead dialer, persistent session, 1.5s live refresh, one-tap dispositions, and WhatsApp hooks.")
+st.caption("Fast multi-caller lead dialer, mandatory Call/WA action lock, speed audit, and Admin live monitor.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
+FAST_SKIP_THRESHOLD_SEC = 5.0  # Agar 5 second se kam mein lead save ho toh Fast Skip flag hoga
 
 
 def get_default_webhook_url() -> str:
@@ -337,7 +338,7 @@ def fetch_live_sheet_data(webhook_url: str):
 
 def build_csv(records):
     output = io.StringIO()
-    headers = ["Sync Key", "Lead #", "Name", "Phone", "Disposition", "Reply / Note", "Caller"]
+    headers = ["Sync Key", "Lead #", "Name", "Phone", "Disposition", "Action Taken", "Duration (s)", "Reply / Note", "Caller"]
     output.write(",".join(headers) + "\n")
 
     def esc(val):
@@ -351,6 +352,8 @@ def build_csv(records):
             esc(r.get("name", "")),
             esc(r.get("phone", "")),
             esc(r.get("disposition", "")),
+            esc(r.get("action_taken", "")),
+            esc(r.get("duration_sec", "")),
             esc(r.get("note", "")),
             esc(r.get("caller", "")),
         ]
@@ -372,6 +375,8 @@ def empty_profile(default_leads_text: str = ""):
         "done_indices": set(),
         "synced_indices": set(),
         "disposition_sheet": {},
+        "action_log": {},  # {idx_str: {"call": bool, "wa": bool}}
+        "lead_opened_at": time.time(),
         "raw_leads": default_leads_text,
         "master_leads": default_leads_text,
         "in_followup_queue": False,
@@ -389,6 +394,7 @@ def save_caller_backup(caller_name: str, state_obj: dict):
             "disposition_sheet": {
                 str(k): v for k, v in state_obj.get("disposition_sheet", {}).items()
             },
+            "action_log": state_obj.get("action_log", {}),
             "raw_leads": state_obj.get("raw_leads", ""),
             "master_leads": state_obj.get("master_leads", state_obj.get("raw_leads", "")),
             "in_followup_queue": bool(state_obj.get("in_followup_queue", False)),
@@ -414,12 +420,31 @@ def load_caller_backup(caller_name: str):
             "disposition_sheet": {
                 int(k): v for k, v in raw.get("disposition_sheet", {}).items()
             },
+            "action_log": raw.get("action_log", {}),
+            "lead_opened_at": time.time(),
             "raw_leads": raw_text,
             "master_leads": raw.get("master_leads", raw_text),
             "in_followup_queue": bool(raw.get("in_followup_queue", False)),
         }
     except Exception:
         return None
+
+
+def get_action_status(profile_obj: dict, idx: int) -> dict:
+    alog = profile_obj.setdefault("action_log", {})
+    return alog.setdefault(str(idx), {"call": False, "wa": False})
+
+
+def format_action_label(act_dict: dict) -> str:
+    c_done = bool(act_dict.get("call"))
+    w_done = bool(act_dict.get("wa"))
+    if c_done and w_done:
+        return "Call + WA"
+    if c_done:
+        return "Call Only"
+    if w_done:
+        return "WA Only"
+    return "No Action"
 
 
 def commit_lead_disposition(
@@ -436,6 +461,12 @@ def commit_lead_disposition(
     webhook_url: str,
     auto_sync_enabled: bool,
 ):
+    act_status = get_action_status(profile_obj, idx_now)
+    action_label = format_action_label(act_status)
+    opened_ts = float(profile_obj.get("lead_opened_at", time.time()))
+    elapsed_sec = round(max(time.time() - opened_ts, 0.5), 1)
+    is_fast_skip = elapsed_sec < FAST_SKIP_THRESHOLD_SEC
+
     caller_label = f"{caller_display_name} ({caller_code})"
     saved_record = {
         "sync_key": build_sync_key(caller_label, idx_now + 1, phone_val, name_val),
@@ -443,6 +474,9 @@ def commit_lead_disposition(
         "name": name_val,
         "phone": phone_val,
         "disposition": disp_val,
+        "action_taken": action_label,
+        "duration_sec": elapsed_sec,
+        "fast_skip": is_fast_skip,
         "note": note_val.strip(),
         "caller": caller_label,
     }
@@ -453,6 +487,7 @@ def commit_lead_disposition(
     next_idx = idx_now + 1 if idx_now < total_count - 1 else idx_now
     if idx_now < total_count - 1:
         profile_obj["lead_idx"] = next_idx
+    profile_obj["lead_opened_at"] = time.time()
 
     save_caller_backup(caller_display_name, profile_obj)
 
@@ -462,6 +497,8 @@ def commit_lead_disposition(
             "current_lead": f"#{next_idx + 1} - {leads_list[next_idx]['name']}" if total_count else name_val,
             "completed": f"{len(profile_obj['done_indices'])}/{total_count}",
             "last_disposition": disp_val,
+            "action_taken": action_label,
+            "duration_sec": elapsed_sec,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         push_to_google_sheet_async(webhook_url, [saved_record], live_activity=live_info)
@@ -482,6 +519,8 @@ qp = st.query_params
 qp_slot = str(qp.get("slot", "")).strip()
 qp_cid = str(qp.get("cid", "")).strip().upper()
 qp_cpin = str(qp.get("cpin", "")).strip()
+qp_act = str(qp.get("act", "")).strip()
+qp_act_idx = str(qp.get("act_idx", "")).strip()
 
 if qp_slot in caller_auth_map and qp_cid and qp_cpin:
     expected_qp = caller_auth_map[qp_slot]
@@ -624,6 +663,7 @@ with st.sidebar:
                         st.session_state.verified_profiles[s_slug]["master_leads"] = chunk_text
                         st.session_state.verified_profiles[s_slug]["in_followup_queue"] = False
                         st.session_state.verified_profiles[s_slug]["lead_idx"] = 0
+                        st.session_state.verified_profiles[s_slug]["lead_opened_at"] = time.time()
                         save_caller_backup(slot_name, st.session_state.verified_profiles[s_slug])
                     st.success("Leads split equally across Caller 1 to Caller 5.")
                     st.rerun()
@@ -655,6 +695,7 @@ with st.sidebar:
                     t_profile["master_leads"] = parsed_up
                     t_profile["in_followup_queue"] = False
                     t_profile["lead_idx"] = 0
+                    t_profile["lead_opened_at"] = time.time()
                     save_caller_backup(admin_target_caller, t_profile)
                     st.success(f"Uploaded leads saved for {admin_target_caller}.")
 
@@ -669,6 +710,7 @@ with st.sidebar:
                 t_profile["master_leads"] = admin_leads_text
                 t_profile["in_followup_queue"] = False
                 t_profile["lead_idx"] = 0
+                t_profile["lead_opened_at"] = time.time()
                 save_caller_backup(admin_target_caller, t_profile)
                 st.success(f"Leads assigned to {admin_target_caller}.")
                 st.rerun()
@@ -693,6 +735,14 @@ else:
 
     profile = st.session_state.verified_profiles[current_slug]
 
+    # Capture Call/WA click events passed via query params if triggered
+    if qp_act in {"call", "wa"} and qp_act_idx.isdigit():
+        act_obj = get_action_status(profile, int(qp_act_idx))
+        act_obj[qp_act] = True
+        save_caller_backup(caller_name, profile)
+        st.query_params.pop("act", None)
+        st.query_params.pop("act_idx", None)
+
     with st.sidebar:
         st.divider()
         st.header("4. Active Caller Leads")
@@ -710,6 +760,7 @@ else:
                 profile["master_leads"] = up_text
                 profile["in_followup_queue"] = False
                 profile["lead_idx"] = 0
+                profile["lead_opened_at"] = time.time()
                 save_caller_backup(caller_name, profile)
                 st.rerun()
 
@@ -750,6 +801,9 @@ else:
             text=f"[{caller_name} | {expected_auth['id']}{mode_tag}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1}",
         )
 
+    current_action_state = get_action_status(profile, profile["lead_idx"])
+    has_performed_action = bool(current_action_state.get("call") or current_action_state.get("wa"))
+
     q_col1, q_col2, q_col3, q_col4, q_col5 = st.columns([2.2, 0.9, 1.2, 1.0, 1.0])
     with q_col1:
         if total_leads > 0:
@@ -763,11 +817,18 @@ else:
     with q_col2:
         if st.button("⬅️ Prev", use_container_width=True, disabled=total_leads == 0 or profile["lead_idx"] == 0):
             profile["lead_idx"] -= 1
+            profile["lead_opened_at"] = time.time()
             save_caller_backup(caller_name, profile)
             st.rerun()
 
     with q_col3:
-        next_clicked = st.button("Save & Next ➡️", type="primary", use_container_width=True, disabled=total_leads == 0)
+        next_clicked = st.button(
+            "Save & Next ➡️",
+            type="primary",
+            use_container_width=True,
+            disabled=total_leads == 0 or not has_performed_action,
+            help="Pehle Call Now ya Send on WhatsApp par click karein, tab Save & Next unlock hoga.",
+        )
 
     with q_col4:
         if total_leads > 0:
@@ -781,6 +842,7 @@ else:
             )
             if int(jump_num) - 1 != profile["lead_idx"]:
                 profile["lead_idx"] = int(jump_num) - 1
+                profile["lead_opened_at"] = time.time()
                 save_caller_backup(caller_name, profile)
                 st.rerun()
 
@@ -790,7 +852,9 @@ else:
             profile["done_indices"].clear()
             profile["disposition_sheet"].clear()
             profile["synced_indices"].clear()
+            profile["action_log"].clear()
             profile["in_followup_queue"] = False
+            profile["lead_opened_at"] = time.time()
             if profile.get("master_leads"):
                 profile["raw_leads"] = profile["master_leads"]
             save_caller_backup(caller_name, profile)
@@ -813,6 +877,7 @@ else:
                 profile["raw_leads"] = "\n".join(retry_lines)
                 profile["lead_idx"] = 0
                 profile["in_followup_queue"] = True
+                profile["lead_opened_at"] = time.time()
                 save_caller_backup(caller_name, profile)
                 st.rerun()
         with fq_col2:
@@ -825,6 +890,7 @@ else:
                     profile["raw_leads"] = profile["master_leads"]
                     profile["lead_idx"] = 0
                     profile["in_followup_queue"] = False
+                    profile["lead_opened_at"] = time.time()
                     save_caller_backup(caller_name, profile)
                     st.rerun()
 
@@ -859,6 +925,11 @@ else:
     )
 
     if total_leads > 0:
+        if not has_performed_action:
+            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Call Now** ya **📲 Send on WhatsApp** par click karein.")
+        else:
+            st.success(f"✅ **Action Verified:** `{format_action_label(current_action_state)}` — ab aap disposition save kar sakte hain.")
+
         st.caption("One-Tap Quick Save & Next:")
         q_btns = st.columns(len(QUICK_DISPOSITIONS))
         quick_chosen_disp = None
@@ -867,6 +938,7 @@ else:
                 if st.button(
                     btn_label,
                     use_container_width=True,
+                    disabled=not has_performed_action,
                     key=f"quick_disp_{current_slug}_{profile['lead_idx']}_{idx_b}",
                 ):
                     quick_chosen_disp = disp_val
@@ -1014,24 +1086,34 @@ else:
         if len(formatted_num) >= 10:
             encoded_msg = urllib.parse.quote(selected_wa_text)
             wa_url = f"https://wa.me/{formatted_num}?text={encoded_msg}"
-            # Reuse a single named target ("market_metrix_wa") so PC browsers don't spawn endless new tabs
-            st.markdown(
-                f"""
-                <a href="{wa_url}" target="market_metrix_wa" rel="noopener" style="
-                    display: inline-block;
-                    width: 100%;
-                    text-align: center;
-                    background-color: #2563eb;
-                    color: #ffffff;
-                    font-weight: 600;
-                    padding: 0.6rem 1rem;
-                    border-radius: 0.5rem;
-                    text-decoration: none;
-                    margin-top: 0.25rem;
-                ">📲 Send on WhatsApp ({display_num})</a>
-                """,
-                unsafe_allow_html=True,
-            )
+            wa_col_a, wa_col_b = st.columns([2.2, 1])
+            with wa_col_a:
+                st.markdown(
+                    f"""
+                    <a href="{wa_url}" target="market_metrix_wa" rel="noopener" style="
+                        display: inline-block;
+                        width: 100%;
+                        text-align: center;
+                        background-color: #2563eb;
+                        color: #ffffff;
+                        font-weight: 600;
+                        padding: 0.6rem 1rem;
+                        border-radius: 0.5rem;
+                        text-decoration: none;
+                        margin-top: 0.25rem;
+                    ">📲 Open WhatsApp ({display_num})</a>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with wa_col_b:
+                if st.button(
+                    "✅ WA Sent",
+                    use_container_width=True,
+                    key=f"confirm_wa_{current_slug}_{profile['lead_idx']}",
+                ):
+                    current_action_state["wa"] = True
+                    save_caller_backup(caller_name, profile)
+                    st.rerun()
         else:
             st.caption("Enter a 10-digit phone number to generate a direct WhatsApp link.")
 
@@ -1050,25 +1132,36 @@ else:
 
         if len(formatted_num) >= 10:
             tel_url = f"tel:+{formatted_num}"
-            st.markdown(
-                f"""
-                <a href="{tel_url}" target="_top" style="
-                    display: inline-block;
-                    width: 100%;
-                    text-align: center;
-                    background-color: #16a34a;
-                    color: #ffffff;
-                    font-weight: 600;
-                    padding: 0.6rem 1rem;
-                    border-radius: 0.5rem;
-                    text-decoration: none;
-                    margin-top: 0.25rem;
-                ">📞 Call Now ({display_num})</a>
-                """,
-                unsafe_allow_html=True,
-            )
+            call_col_a, call_col_b = st.columns([2.2, 1])
+            with call_col_a:
+                st.markdown(
+                    f"""
+                    <a href="{tel_url}" target="_top" style="
+                        display: inline-block;
+                        width: 100%;
+                        text-align: center;
+                        background-color: #16a34a;
+                        color: #ffffff;
+                        font-weight: 600;
+                        padding: 0.6rem 1rem;
+                        border-radius: 0.5rem;
+                        text-decoration: none;
+                        margin-top: 0.25rem;
+                    ">📞 Dial ({display_num})</a>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with call_col_b:
+                if st.button(
+                    "✅ Call Done",
+                    use_container_width=True,
+                    key=f"confirm_call_{current_slug}_{profile['lead_idx']}",
+                ):
+                    current_action_state["call"] = True
+                    save_caller_backup(caller_name, profile)
+                    st.rerun()
         else:
-            st.caption("Enter a 10-digit phone number to enable the Call Now button.")
+            st.caption("Enter a 10-digit phone number to enable the Call button.")
 
     st.divider()
     st.subheader("📊 4. Disposition Sheet")
@@ -1145,11 +1238,16 @@ else:
                 key=f"dl_btn_{current_slug}",
             )
     else:
-        st.info("No dispositions logged yet. Tap a quick button or click **Save & Next ➡️** to populate the sheet.")
+        st.info("No dispositions logged yet. Dial or send WhatsApp first, then save the disposition.")
 
 if is_admin_verified:
     st.divider()
-    st.subheader("👀 5. Admin Live Team Monitor")
+    st.subheader("👀 5. Admin Live Team Monitor & Quality Audit")
+
+    total_team_interested = 0
+    total_team_followup = 0
+    total_team_not_int = 0
+    total_team_logged = 0
 
     local_team_rows = []
     for c_name, auth_info in caller_auth_map.items():
@@ -1161,24 +1259,60 @@ if is_admin_verified:
             p_idx = min(prof.get("lead_idx", 0), max(p_total - 1, 0)) if p_total > 0 else 0
             curr_lbl = f"#{p_idx + 1} - {p_leads[p_idx]['name']}" if p_total > 0 else "No Batch"
             disp_map = prof.get("disposition_sheet", {})
+            records = list(disp_map.values())
+
+            c_int = sum(1 for r in records if r.get("disposition") == "Interested")
+            c_fu = sum(1 for r in records if r.get("disposition") in FOLLOW_UP_STATUSES)
+            c_not_int = sum(1 for r in records if r.get("disposition") == "Not Interested")
+
+            c_call_cnt = sum(1 for r in records if "Call" in str(r.get("action_taken", "")))
+            c_wa_cnt = sum(1 for r in records if "WA" in str(r.get("action_taken", "")))
+            fast_skips = sum(1 for r in records if r.get("fast_skip") or float(r.get("duration_sec", 10)) < FAST_SKIP_THRESHOLD_SEC)
+
+            durations = [float(r.get("duration_sec", 0)) for r in records if r.get("duration_sec") is not None]
+            avg_sec = f"{round(sum(durations) / len(durations), 1)}s" if durations else "—"
+
+            total_team_interested += c_int
+            total_team_followup += c_fu
+            total_team_not_int += c_not_int
+            total_team_logged += len(records)
+
             last_rec = disp_map[max(disp_map.keys())] if disp_map else None
             local_team_rows.append({
                 "Caller": c_name,
-                "Caller ID": auth_info["id"],
+                "ID": auth_info["id"],
+                "Progress": f"{len(prof.get('done_indices', set()))}/{p_total}",
+                "🔥 Interested": c_int,
+                "🔁 Follow-Up / Busy / Cut": c_fu,
+                "❌ Not Int.": c_not_int,
+                "📞 Calls": c_call_cnt,
+                "💬 WAs": c_wa_cnt,
+                "⏱️ Avg Time": avg_sec,
+                "⚠️ Fast Skips (<5s)": fast_skips,
                 "Current Lead": curr_lbl,
-                "Completed": f"{len(prof.get('done_indices', set()))}/{p_total}",
-                "Logged": len(disp_map),
-                "Last Disposition": last_rec["disposition"] if last_rec else "—",
+                "Last Status": last_rec["disposition"] if last_rec else "—",
             })
         else:
             local_team_rows.append({
                 "Caller": c_name,
-                "Caller ID": auth_info["id"],
+                "ID": auth_info["id"],
+                "Progress": "0/0",
+                "🔥 Interested": 0,
+                "🔁 Follow-Up / Busy / Cut": 0,
+                "❌ Not Int.": 0,
+                "📞 Calls": 0,
+                "💬 WAs": 0,
+                "⏱️ Avg Time": "—",
+                "⚠️ Fast Skips (<5s)": 0,
                 "Current Lead": "Not Started",
-                "Completed": "0/0",
-                "Logged": 0,
-                "Last Disposition": "—",
+                "Last Status": "—",
             })
+
+    tm1, tm2, tm3, tm4 = st.columns(4)
+    tm1.metric("Team Total Logged", total_team_logged)
+    tm2.metric("🔥 Team Interested", total_team_interested)
+    tm3.metric("🔁 Team Follow-Up / Busy / Cut", total_team_followup)
+    tm4.metric("❌ Team Not Interested", total_team_not_int)
 
     st.dataframe(local_team_rows, use_container_width=True, hide_index=True)
 
