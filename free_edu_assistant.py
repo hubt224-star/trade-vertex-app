@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 import streamlit as st
@@ -12,7 +13,7 @@ import streamlit as st
 st.set_page_config(page_title="Market Metrix — Smart Calling & WA Helper", layout="wide")
 
 st.title("📈 Market Metrix — Lead Classifier, Calling & WA Helper")
-st.caption("Fast, lightweight multi-caller lead dialer, one-tap dispositions, follow-up queue, and high-converting WhatsApp templates.")
+st.caption("Fast multi-caller lead dialer, persistent session, 1.5s live refresh, one-tap dispositions, and WhatsApp hooks.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
@@ -474,6 +475,24 @@ if "verified_profiles" not in st.session_state:
     st.session_state.verified_profiles = {}
 
 caller_auth_map = st.session_state.caller_auth_map
+slot_names = list(caller_auth_map.keys())
+
+# Restore login credentials from query params across refresh / new tab until Logout
+qp = st.query_params
+qp_slot = str(qp.get("slot", "")).strip()
+qp_cid = str(qp.get("cid", "")).strip().upper()
+qp_cpin = str(qp.get("cpin", "")).strip()
+
+if qp_slot in caller_auth_map and qp_cid and qp_cpin:
+    expected_qp = caller_auth_map[qp_slot]
+    if qp_cid == expected_qp["id"].strip().upper() and qp_cpin == expected_qp["pin"].strip():
+        st.session_state["active_slot"] = qp_slot
+        st.session_state[f"cid_input_{qp_slot}"] = qp_cid
+        st.session_state[f"cpin_input_{qp_slot}"] = qp_cpin
+
+default_slot_idx = 0
+if "active_slot" in st.session_state and st.session_state["active_slot"] in slot_names:
+    default_slot_idx = slot_names.index(st.session_state["active_slot"])
 
 with st.sidebar:
     st.header("1. Caller Login & Session Settings")
@@ -481,9 +500,11 @@ with st.sidebar:
 
     selected_preset = st.selectbox(
         "Caller Slot",
-        list(caller_auth_map.keys()),
-        index=0,
+        slot_names,
+        index=default_slot_idx,
     )
+    st.session_state["active_slot"] = selected_preset
+
     entered_caller_id = st.text_input(
         "Enter Caller ID",
         placeholder="Example: C1",
@@ -502,6 +523,18 @@ with st.sidebar:
         and entered_caller_pin.strip() == expected_auth["pin"].strip()
     )
 
+    if is_caller_verified:
+        st.query_params["slot"] = selected_preset
+        st.query_params["cid"] = entered_caller_id.strip().upper()
+        st.query_params["cpin"] = entered_caller_pin.strip()
+
+        if st.button("🚪 Logout Caller", use_container_width=True, key="caller_logout_btn"):
+            st.query_params.clear()
+            st.session_state.pop("active_slot", None)
+            st.session_state.pop(f"cid_input_{selected_preset}", None)
+            st.session_state.pop(f"cpin_input_{selected_preset}", None)
+            st.rerun()
+
     topic = st.selectbox(
         "Session Topic",
         [
@@ -518,7 +551,8 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("2. Google Sheet Sync")
+    st.header("2. Auto-Refresh & Google Sheet Sync")
+    auto_refresh_enabled = st.checkbox("Auto-Refresh (1.5s)", value=True)
     gsheet_webhook = st.text_input(
         "Apps Script Web App URL",
         value=DEFAULT_GSHEET_WEBHOOK,
@@ -540,7 +574,7 @@ with st.sidebar:
         with st.expander("🔑 Manage Caller ID & PIN", expanded=True):
             manage_slot = st.selectbox(
                 "Select Caller Slot",
-                list(caller_auth_map.keys()),
+                slot_names,
                 key="manage_id_pin_slot",
             )
             curr_creds = caller_auth_map[manage_slot]
@@ -577,7 +611,7 @@ with st.sidebar:
                 key="admin_bulk_split_box",
             )
             if st.button("✂️ Split & Assign Equally to 5 Callers", use_container_width=True, key="admin_split_btn"):
-                split_map = split_leads_equally(bulk_raw_text, list(caller_auth_map.keys()))
+                split_map = split_leads_equally(bulk_raw_text, slot_names)
                 has_any = any(bool(v.strip()) for v in split_map.values())
                 if has_any:
                     for slot_name, chunk_text in split_map.items():
@@ -599,7 +633,7 @@ with st.sidebar:
             st.divider()
             admin_target_caller = st.selectbox(
                 "Select Target Caller",
-                list(caller_auth_map.keys()),
+                slot_names,
                 key="admin_target_caller_select",
             )
             t_slug = safe_caller_slug(admin_target_caller)
@@ -751,7 +785,7 @@ else:
                 st.rerun()
 
     with q_col5:
-        if st.button("🔄 Reset", use_container_width=True, disabled=total_leads == 0):
+        if st.button("🔄 Reset Batch", use_container_width=True, disabled=total_leads == 0):
             profile["lead_idx"] = 0
             profile["done_indices"].clear()
             profile["disposition_sheet"].clear()
@@ -759,12 +793,7 @@ else:
             profile["in_followup_queue"] = False
             if profile.get("master_leads"):
                 profile["raw_leads"] = profile["master_leads"]
-            backup_path = get_backup_file(caller_name)
-            if os.path.exists(backup_path):
-                try:
-                    os.remove(backup_path)
-                except Exception:
-                    pass
+            save_caller_backup(caller_name, profile)
             st.rerun()
 
     if due_followup_records or profile.get("in_followup_queue", False):
@@ -985,7 +1014,24 @@ else:
         if len(formatted_num) >= 10:
             encoded_msg = urllib.parse.quote(selected_wa_text)
             wa_url = f"https://wa.me/{formatted_num}?text={encoded_msg}"
-            st.link_button(f"📲 Send on WhatsApp ({display_num})", wa_url, use_container_width=True)
+            # Reuse a single named target ("market_metrix_wa") so PC browsers don't spawn endless new tabs
+            st.markdown(
+                f"""
+                <a href="{wa_url}" target="market_metrix_wa" rel="noopener" style="
+                    display: inline-block;
+                    width: 100%;
+                    text-align: center;
+                    background-color: #2563eb;
+                    color: #ffffff;
+                    font-weight: 600;
+                    padding: 0.6rem 1rem;
+                    border-radius: 0.5rem;
+                    text-decoration: none;
+                    margin-top: 0.25rem;
+                ">📲 Send on WhatsApp ({display_num})</a>
+                """,
+                unsafe_allow_html=True,
+            )
         else:
             st.caption("Enter a 10-digit phone number to generate a direct WhatsApp link.")
 
@@ -1162,3 +1208,13 @@ if is_admin_verified:
             use_container_width=True,
             key="dl_all_callers_remote_csv",
         )
+
+# 1.5s background auto-refresh loop (non-blocking)
+if auto_refresh_enabled:
+    now_ts = time.time()
+    last_tick = st.session_state.get("_last_auto_refresh_ts", 0.0)
+    if last_tick == 0.0:
+        st.session_state["_last_auto_refresh_ts"] = now_ts
+    elif now_ts - last_tick >= 1.5:
+        st.session_state["_last_auto_refresh_ts"] = now_ts
+        st.rerun()
