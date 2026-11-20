@@ -4,15 +4,15 @@ import io
 import json
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
-import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Smart Calling & WA Helper", layout="wide")
 
 st.title("📚 Smart Lead Classifier, Calling & WA Helper")
-st.caption("Assign or paste leads, manage calls & WhatsApp follow-ups, log dispositions, and track live caller progress.")
+st.caption("Fast, lightweight multi-caller lead dialer, smart WhatsApp templates, and live disposition tracker.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
@@ -40,13 +40,44 @@ DEFAULT_CALLER_AUTH_MAP = {
 
 DISPOSITION_OPTIONS = [
     "Interested",
-    "Not Interested",
+    "Not Picked / Switched Off",
+    "Call Cut",
+    "Busy",
     "Doubt / Beginner",
     "Follow-Up",
-    "Not Picked / Switched Off",
+    "Not Interested",
 ]
 
+FOLLOW_UP_STATUSES = {
+    "Follow-Up",
+    "Doubt / Beginner",
+    "Not Picked / Switched Off",
+    "Call Cut",
+    "Busy",
+}
+
+DISPOSITION_TO_WA_KEY = {
+    "Interested": "Interested (Session Details & Onboarding)",
+    "Not Picked / Switched Off": "Not Picked / Switched Off",
+    "Call Cut": "Call Cut (Quick Follow-Up)",
+    "Busy": "Busy (Call Back Later)",
+    "Doubt / Beginner": "Doubt: Is This Really Free?",
+    "Follow-Up": "Follow-Up: Will Check Later / Connect Tomorrow",
+    "Not Interested": "Not Interested (Polite Close)",
+}
+
+DISPOSITION_TO_CALL_KEY = {
+    "Interested": "Closing / WhatsApp Push",
+    "Not Picked / Switched Off": "Opening (First 20 Seconds)",
+    "Call Cut": "Opening (First 20 Seconds)",
+    "Busy": "Opening (First 20 Seconds)",
+    "Doubt / Beginner": "If Asked: 'Will There Be Any Fees?'",
+    "Follow-Up": "Opening (First 20 Seconds)",
+    "Not Interested": "Opening (First 20 Seconds)",
+}
+
 DEFAULT_LEADS = "Rahul, 9876543210\nAmit, 9123456789\nPriya, 9988776655"
+PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\s\-().]{8,}\d)")
 
 
 def clean_phone(raw_phone: str) -> str:
@@ -106,10 +137,10 @@ def save_auth_config(auth_map: dict):
         pass
 
 
+@st.cache_data(show_spinner=False, max_entries=64)
 def parse_leads_text(raw_text: str):
     leads = []
     seen_phones = set()
-    phone_pattern = re.compile(r"(?:\+?\d[\d\s\-().]{8,}\d)")
 
     for line in (raw_text or "").splitlines():
         line = line.strip()
@@ -122,7 +153,7 @@ def parse_leads_text(raw_text: str):
 
         found_phone = ""
         found_digits = ""
-        for match in phone_pattern.finditer(line):
+        for match in PHONE_PATTERN.finditer(line):
             candidate = match.group(0).strip()
             digits = re.sub(r"\D", "", candidate)
             if len(digits) == 11 and digits.startswith("0"):
@@ -201,6 +232,8 @@ def analyze_lead_reply(reply_text: str):
         "not interested", "nhi", "nahi", "band karo", "wrong number",
         "mat karo", "stop", "no thanks", "timepass"
     ]
+    call_cut_kw = ["cut", "kaat", "disconnect", "call cut"]
+    busy_kw = ["busy", "baad", "kal", "sham", "abhi nahi", "later", "call back", "free hoke", "sunday", "weekend"]
     hot_kw = [
         "yes", "haan", "han", "link", "bhejo", "send", "join",
         "kab hai", "timing", "interested", "sikha", "seekhna", "details"
@@ -208,10 +241,6 @@ def analyze_lead_reply(reply_text: str):
     doubt_kw = [
         "free", "paisa", "paise", "fees", "charge", "kuch nhi aata",
         "beginner", "new", "kaise", "kya hai", "sebi", "tip"
-    ]
-    followup_kw = [
-        "baad", "kal", "sham", "busy", "abhi nahi", "later",
-        "call back", "free hoke", "sunday", "weekend"
     ]
 
     if any(k in text for k in not_interested_kw) and not any(
@@ -221,45 +250,42 @@ def analyze_lead_reply(reply_text: str):
             "status": "❌ Not Interested",
             "disposition": "Not Interested",
             "color": "error",
-            "action": "Do not spend extra time on this lead. Move to the next lead.",
-            "suggested_wa": "First Touch (Post-Call / Initial Message)",
-            "suggested_call": "Opening (First 20 Seconds)",
+            "action": "Polite closing message bhej kar next lead par move karein.",
+        }
+    if any(k in text for k in call_cut_kw):
+        return {
+            "status": "✂️ Call Cut",
+            "disposition": "Call Cut",
+            "color": "warning",
+            "action": "Short WhatsApp drop karein aur thodi der baad retry karein.",
+        }
+    if any(k in text for k in busy_kw):
+        return {
+            "status": "⏳ Busy / Follow-Up",
+            "disposition": "Busy",
+            "color": "info",
+            "action": "Abhi push na karein — WhatsApp par short detail chhod kar baad mein follow up karein.",
         }
     if any(k in text for k in hot_kw):
         return {
             "status": "🔥 Hot / Interested Lead",
             "disposition": "Interested",
             "color": "success",
-            "action": "Share the session details/link immediately and onboard for today's live class.",
-            "suggested_wa": "First Touch (Post-Call / Initial Message)",
-            "suggested_call": "Closing / WhatsApp Push",
+            "action": "Turant session details/link WhatsApp par bhejein aur aaj ki live class ke liye onboard karein.",
         }
     if any(k in text for k in doubt_kw):
         return {
             "status": "🤔 Doubt / Beginner Lead (High Potential)",
             "disposition": "Doubt / Beginner",
             "color": "warning",
-            "action": "Clarify that this is a 100% free educational session, then share the session details.",
-            "suggested_wa": "Doubt: Is This Really Free?",
-            "suggested_call": "If Asked: 'Will There Be Any Fees?'",
-        }
-    if any(k in text for k in followup_kw):
-        return {
-            "status": "⏳ Call Back / Follow-Up Lead",
-            "disposition": "Follow-Up",
-            "color": "info",
-            "action": "Do not push immediately. Leave brief details on WhatsApp and follow up at the requested time.",
-            "suggested_wa": "Follow-Up: Will Check Later / Connect Tomorrow",
-            "suggested_call": "Opening (First 20 Seconds)",
+            "action": "Clarify karein ki yeh 100% free educational session hai, phir session details bhejein.",
         }
 
     return {
-        "status": "🟡 Neutral / Needs Quick Clarification",
+        "status": "🟡 Follow-Up / Needs Clarification",
         "disposition": "Follow-Up",
         "color": "info",
-        "action": "Send a short message asking whether they would like details for the free live session.",
-        "suggested_wa": "First Touch (Post-Call / Initial Message)",
-        "suggested_call": "Opening (First 20 Seconds)",
+        "action": "WhatsApp par short detail bhej kar confirmation lein.",
     }
 
 
@@ -274,9 +300,20 @@ def push_to_google_sheet(webhook_url: str, rows: list, live_activity: dict | Non
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=12) as resp:
         body = resp.read().decode("utf-8", errors="ignore")
         return resp.status, body
+
+
+def push_to_google_sheet_async(webhook_url: str, rows: list, live_activity: dict | None = None):
+    def _worker():
+        try:
+            push_to_google_sheet(webhook_url, rows, live_activity=live_activity)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
 
 
 def fetch_live_sheet_data(webhook_url: str):
@@ -284,7 +321,7 @@ def fetch_live_sheet_data(webhook_url: str):
     sep = "&" if "?" in url else "?"
     full_url = f"{url}{sep}action=live_view"
     req = urllib.request.Request(full_url, method="GET")
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=12) as resp:
         body = resp.read().decode("utf-8", errors="ignore")
         return json.loads(body)
 
@@ -312,6 +349,14 @@ def build_csv(records):
     return output.getvalue().encode("utf-8-sig")
 
 
+def build_raw_rows_csv(rows_2d: list) -> bytes:
+    output = io.StringIO()
+    for row in rows_2d:
+        escaped = ['"' + str(cell or "").replace('"', '""') + '"' for cell in row]
+        output.write(",".join(escaped) + "\n")
+    return output.getvalue().encode("utf-8-sig")
+
+
 def empty_profile(default_leads_text: str = ""):
     return {
         "lead_idx": 0,
@@ -336,7 +381,7 @@ def save_caller_backup(caller_name: str, state_obj: dict):
             "raw_leads": state_obj.get("raw_leads", ""),
         }
         with open(backup_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
 
@@ -414,7 +459,7 @@ with st.sidebar:
         placeholder="https://script.google.com/macros/s/.../exec",
     )
     auto_sync_sheet = st.checkbox(
-        "Auto-sync to Google Sheet & live status on Save & Next",
+        "Fast background sync on Save & Next",
         value=True,
     )
 
@@ -583,7 +628,7 @@ else:
         default_name = "Rahul"
         default_phone = ""
 
-    done_count = len([i for i in profile["done_indices"] if i < total_leads]) if total_leads > 0 else 0
+    done_count = sum(1 for i in profile["done_indices"] if i < total_leads) if total_leads > 0 else 0
 
     if total_leads > 0:
         st.progress(
@@ -644,13 +689,13 @@ else:
         lead_name = st.text_input(
             "Lead Name",
             value=default_name,
-            key=f"name_{current_slug}_{profile['lead_idx']}_{default_name}",
+            key=f"name_{current_slug}_{profile['lead_idx']}",
         )
     with e_col2:
         lead_phone = st.text_input(
             "Lead Phone Number",
             value=default_phone,
-            key=f"phone_{current_slug}_{profile['lead_idx']}_{default_phone}",
+            key=f"phone_{current_slug}_{profile['lead_idx']}",
         )
     with e_col3:
         existing_disp = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("disposition")
@@ -663,30 +708,30 @@ else:
 
     st.divider()
 
-    st.subheader("🧠 1. Lead Reply Analyzer (Paste Reply / Call Note)")
+    st.subheader("🧠 1. Lead Reply Analyzer (Optional Note)")
     existing_note = profile["disposition_sheet"].get(profile["lead_idx"], {}).get("note", "")
     lead_reply = st.text_area(
         "What did the lead reply on WhatsApp or say on the call?",
         value=existing_note,
-        placeholder="Example: 'Please share details', 'Is there any fee?', 'Busy right now, call tomorrow', 'Not interested'",
-        height=75,
+        placeholder="Example: 'Please share details', 'Is there any fee?', 'Call cut ho gaya', 'Busy right now'",
+        height=68,
         key=f"reply_{current_slug}_{profile['lead_idx']}",
     )
 
     analysis = analyze_lead_reply(lead_reply)
     if analysis:
         if analysis["color"] == "success":
-            st.success(f"**Status:** {analysis['status']}  \n**Next Action:** {analysis['action']}")
+            st.success(f"**Status:** {analysis['status']} — {analysis['action']}")
         elif analysis["color"] == "warning":
-            st.warning(f"**Status:** {analysis['status']}  \n**Next Action:** {analysis['action']}")
+            st.warning(f"**Status:** {analysis['status']} — {analysis['action']}")
         elif analysis["color"] == "error":
-            st.error(f"**Status:** {analysis['status']}  \n**Next Action:** {analysis['action']}")
+            st.error(f"**Status:** {analysis['status']} — {analysis['action']}")
         else:
-            st.info(f"**Status:** {analysis['status']}  \n**Next Action:** {analysis['action']}")
+            st.info(f"**Status:** {analysis['status']} — {analysis['action']}")
 
     if next_clicked and total_leads > 0:
         idx_now = profile["lead_idx"]
-        final_disp = disp_select if disp_select else (analysis["disposition"] if analysis else "Follow-Up")
+        final_disp = disp_select
         caller_label = f"{caller_name} ({expected_auth['id']})"
         saved_record = {
             "sync_key": build_sync_key(caller_label, idx_now + 1, lead_phone, lead_name),
@@ -715,38 +760,48 @@ else:
                 "last_disposition": final_disp,
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
-            try:
-                status_code, _ = push_to_google_sheet(gsheet_webhook, [saved_record], live_activity=live_info)
-                if 200 <= status_code < 300:
-                    profile["synced_indices"].add(idx_now)
-                    save_caller_backup(caller_name, profile)
-            except Exception:
-                pass
+            push_to_google_sheet_async(gsheet_webhook, [saved_record], live_activity=live_info)
+            profile["synced_indices"].add(idx_now)
 
         st.rerun()
 
     st.divider()
 
     wa_messages = {
-        "First Touch (Post-Call / Initial Message)": (
+        "Interested (Session Details & Onboarding)": (
             f"Namaste {lead_name} ji 👋\n"
             f"{brand_name} se baat kar raha hoon.\n\n"
-            f"Humne aapke liye *{topic}* rakhi hai ({class_time}) — yeh *100% free educational session* hai (koi tip ya paid signal nahi).\n\n"
-            f"Agar aap seekhna chahte hain toh *YES* likh kar bhejein, main join karne ki detail bhej deta hoon."
+            f"Aapke interest ke liye thank you! Humne aapke liye *{topic}* rakhi hai ({class_time}) — yeh *100% free educational session* hai (koi tip ya paid signal nahi).\n\n"
+            f"Confirm karne ke liye *YES* reply karein, main aapko session link aur reminder bhej deta hoon."
         ),
-        "Missed / Not Picked Call": (
+        "Not Picked / Switched Off": (
             f"Hi {lead_name} ji, abhi {brand_name} se call kiya tha par connect nahi ho paya.\n\n"
-            f"Hum *{topic}* ke liye free educational guidance de rahe hain.\n"
-            f"Jab free hon toh batayein, kya main aapko {class_time} ki detail yahan bhej dun?"
+            f"Hum *{topic}* ({class_time}) ke liye 100% free educational guidance de rahe hain.\n"
+            f"Jab free hon toh batayein, kya main aapko session ki details yahan bhej dun?"
+        ),
+        "Call Cut (Quick Follow-Up)": (
+            f"Hi {lead_name} ji, abhi {brand_name} se call connect hua tha par shayad network ki wajah se cut ho gaya.\n\n"
+            f"Humne aapke liye *{topic}* ({class_time}) rakhi hai jo bilkul *100% free educational class* hai.\n"
+            f"Agar aap details chahte hain toh *YES* likh kar reply karein."
+        ),
+        "Busy (Call Back Later)": (
+            f"Koi baat nahi {lead_name} ji 👍\n"
+            f"Jab aap free hon tab aaram se dekh lijiyega. *{topic}* ({class_time}) bilkul *100% free educational session* hai.\n\n"
+            f"Free hote hi *YES* reply kar dijiyega, main join link bhej dunga."
         ),
         "Doubt: Is This Really Free?": (
             f"Bilkul {lead_name} ji, yeh *{topic}* learning & awareness ke liye *100% free* hai.\n\n"
             f"Hamara focus sirf concepts samjhana hai taaki aap khud market ko better samajh sakein.\n"
-            f"Kya main aapko session ka link/timing bhej dun?"
+            f"Kya main aapko {class_time} ki detail bhej dun?"
         ),
         "Follow-Up: Will Check Later / Connect Tomorrow": (
-            f"Koi baat nahi {lead_name} ji 👍\n"
-            f"Jab aapko waqt mile tab zaroor batana. *{topic}* ke basic notes/details main yahan rakh deta hoon taaki aaram se dekh sakein."
+            f"Namaste {lead_name} ji 👍\n"
+            f"Reminder ke liye message kar raha hoon — *{topic}* ({class_time}) ke liye aapki slot reserve hai.\n"
+            f"Join karne ke liye *YES* reply kar dein."
+        ),
+        "Not Interested (Polite Close)": (
+            f"Thank you {lead_name} ji aapke samay ke liye 🙏\n"
+            f"Agar future mein kabhi free educational session join karna chahein toh zaroor batayein. Have a great day!"
         ),
     }
 
@@ -769,8 +824,12 @@ else:
 
     wa_keys = list(wa_messages.keys())
     call_keys = list(call_scripts.keys())
-    default_wa_idx = wa_keys.index(analysis["suggested_wa"]) if analysis else 0
-    default_call_idx = call_keys.index(analysis["suggested_call"]) if analysis else 0
+
+    mapped_wa_key = DISPOSITION_TO_WA_KEY.get(disp_select, wa_keys[0])
+    default_wa_idx = wa_keys.index(mapped_wa_key) if mapped_wa_key in wa_keys else 0
+
+    mapped_call_key = DISPOSITION_TO_CALL_KEY.get(disp_select, call_keys[0])
+    default_call_idx = call_keys.index(mapped_call_key) if mapped_call_key in call_keys else 0
 
     col1, col2 = st.columns(2)
     formatted_num = clean_phone(lead_phone)
@@ -778,11 +837,12 @@ else:
 
     with col1:
         st.subheader("💬 2. Ready WhatsApp Message")
+        st.caption(f"Auto-matched with disposition: **{disp_select}**")
         wa_type = st.selectbox(
             "Select Message Template",
             wa_keys,
             index=default_wa_idx,
-            key=f"wa_type_{current_slug}_{profile['lead_idx']}",
+            key=f"wa_type_{current_slug}_{profile['lead_idx']}_{disp_select}",
         )
         selected_wa_text = wa_messages[wa_type]
         st.code(selected_wa_text, language="text")
@@ -803,7 +863,7 @@ else:
             "Select Call Scenario",
             call_keys,
             index=default_call_idx,
-            key=f"call_type_{current_slug}_{profile['lead_idx']}",
+            key=f"call_type_{current_slug}_{profile['lead_idx']}_{disp_select}",
         )
         st.code(call_scripts[call_type], language="text")
 
@@ -838,17 +898,13 @@ else:
     if sheet_rows:
         int_count = sum(1 for r in sheet_rows if r["disposition"] == "Interested")
         not_int_count = sum(1 for r in sheet_rows if r["disposition"] == "Not Interested")
-        fu_count = sum(
-            1
-            for r in sheet_rows
-            if r["disposition"] in ["Follow-Up", "Doubt / Beginner", "Not Picked / Switched Off"]
-        )
+        fu_count = sum(1 for r in sheet_rows if r["disposition"] in FOLLOW_UP_STATUSES)
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Logged", len(sheet_rows))
         m2.metric("Interested", int_count)
         m3.metric("Not Interested", not_int_count)
-        m4.metric("Follow-Up / Doubt / Other", fu_count)
+        m4.metric("Follow-Up / Cut / Busy", fu_count)
 
         filter_disp = st.selectbox(
             "Filter Disposition",
@@ -859,11 +915,7 @@ else:
         if filter_disp == "All":
             filtered_rows = sheet_rows
         elif filter_disp == "Due Follow-Ups":
-            filtered_rows = [
-                r
-                for r in sheet_rows
-                if r["disposition"] in ["Follow-Up", "Doubt / Beginner", "Not Picked / Switched Off"]
-            ]
+            filtered_rows = [r for r in sheet_rows if r["disposition"] in FOLLOW_UP_STATUSES]
         else:
             filtered_rows = [r for r in sheet_rows if r["disposition"] == filter_disp]
 
@@ -966,8 +1018,7 @@ if is_admin_verified:
 
     cached_sheet_rows = st.session_state.get("live_sheet_cache", [])
     if cached_sheet_rows:
-        df_remote = pd.DataFrame(cached_sheet_rows)
-        remote_csv = df_remote.to_csv(index=False, header=False).encode("utf-8-sig")
+        remote_csv = build_raw_rows_csv(cached_sheet_rows)
         st.download_button(
             label="⬇️ Download All Callers Sheet from Google Sheet (CSV)",
             data=remote_csv,
