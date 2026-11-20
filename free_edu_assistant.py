@@ -252,7 +252,7 @@ def analyze_lead_reply(reply_text: str):
     ]
     doubt_kw = [
         "free", "paisa", "paise", "fees", "charge", "kuch nhi aata",
-        "beginner", "new", "kaise", "kya hai", "sebi", "tip"
+        "beginner", "new", "kaise", "kya hai", "sebi", "tip", "smc", "algo", "ai"
     ]
 
     if any(k in text for k in not_interested_kw) and not any(
@@ -269,14 +269,14 @@ def analyze_lead_reply(reply_text: str):
             "status": "✂️ Call Cut",
             "disposition": "Call Cut",
             "color": "warning",
-            "action": "Short WhatsApp hook drop karein aur thodi der baad retry karein.",
+            "action": "Short WhatsApp SMC/AI hook drop karein aur thodi der baad retry karein.",
         }
     if any(k in text for k in busy_kw):
         return {
             "status": "⏳ Busy / Follow-Up",
             "disposition": "Busy",
             "color": "info",
-            "action": "Abhi push na karein — WhatsApp par short value hook chhod kar baad mein follow up karein.",
+            "action": "Abhi push na karein — WhatsApp par SMC & AI tool hook chhod kar baad mein follow up karein.",
         }
     if any(k in text for k in hot_kw):
         return {
@@ -290,14 +290,14 @@ def analyze_lead_reply(reply_text: str):
             "status": "🤔 Doubt / Beginner Lead (High Potential)",
             "disposition": "Doubt / Beginner",
             "color": "warning",
-            "action": "Clarify karein ki yeh 100% free educational session hai, phir session details bhejein.",
+            "action": "Samjhayein ki SMC AI/algo helper chart samajhne mein madad karta hai aur session 100% free educational hai.",
         }
 
     return {
         "status": "🟡 Follow-Up / Needs Clarification",
         "disposition": "Follow-Up",
         "color": "info",
-        "action": "WhatsApp par short detail bhej kar confirmation lein.",
+        "action": "WhatsApp par short SMC & AI detail bhej kar confirmation lein.",
     }
 
 
@@ -594,9 +594,9 @@ with st.sidebar:
     topic = st.selectbox(
         "Session Topic",
         [
-            "Smart Money & Chart Reading Masterclass",
-            "Price Action & Market Structure Live Session",
-            "Zero-to-Pro Stock Market Foundation Class",
+            "SMC AI & Chart Reading Masterclass",
+            "Smart Money + Algo Signal Logic Live Session",
+            "Zero-to-Pro SMC & Price Action Foundation Class",
         ],
     )
     class_time = st.text_input("Session Timing / Offer Line", value="Aaj sham 8 baje ki free live class")
@@ -941,7 +941,7 @@ else:
     lead_reply = st.text_input(
         "Quick Call Note / Reply (Optional)",
         value=existing_note,
-        placeholder="Example: 'Call cut', 'Busy till 6 PM', 'Requested link'",
+        placeholder="Example: 'Call cut', 'Busy till 6 PM', 'Requested SMC AI link'",
         key=f"reply_{current_slug}_{profile['lead_idx']}",
     )
 
@@ -1019,63 +1019,63 @@ else:
         "Interested (Seat Confirmation & Hook)": (
             f"Namaste *{lead_name}* ji 👋\n"
             f"*{brand_name}* se baat kar raha hoon.\n\n"
-            f"90% retail traders chart ke galat signals dekh kar trap hote hain — aaj ke *{topic}* ({class_time}) mein aap live dekhenge ki *Big Players / Smart Money* chart par entry aur exit kaise plan karte hain.\n\n"
-            f"✅ *100% Free Practical Educational Session* (Zero tips, pure chart logic)"
+            f"Trade karte waqt agar kabhi chart samajhne ya entry/exit plan karne mein confusion hoti hai, toh aaj ke *{topic}* ({class_time}) mein aapko *SMC AI & Algo Helper Tools* ka practical overview bhi milega — jo *Order Blocks, FVG aur market structure* ko aasaan dhang se scan karne mein madad karte hain.\n\n"
+            f"🤖 *SMC AI & Algo Tools + Live Chart Logic* (100% Free Educational Session — Zero tips)"
             f"{link_block}"
-            f"Apni seat confirm karne ke liye bas *YES* reply karein 👇"
+            f"Apni seat aur tool details ke liye bas *YES* reply karein 👇"
         ),
         "Follow-Up: Limited Seat Reminder": (
             f"Namaste *{lead_name}* ji ⏰\n"
             f"*{brand_name}* se quick reminder — aaj ke *{topic}* ({class_time}) mein kuch hi slots bachi hain.\n\n"
-            f"Agar aap aaj *live chart breakdown aur smart money concepts* seekhna chahte hain toh miss mat kijiyega.\n"
+            f"Is session mein hum *SMC AI & algo-assisted chart analysis* dikhayenge taaki trade lete waqt aapko guesswork aur confusion kam pade.\n"
             f"{link_block}"
             f"Confirm karne ke liye abhi *YES* reply karein 👇"
         ),
         "Not Picked / Switched Off (Curiosity Hook)": (
             f"Hi *{lead_name}* ji 👋\n"
             f"Abhi *{brand_name}* se call kiya tha par connect nahi ho paya.\n\n"
-            f"Agar aap stock market mein *bina kisi paid tip ke khud chart read karna* seekhna chahte hain, toh humne aapke liye *{topic}* ({class_time}) rakhi hai — bilkul *FREE*.\n"
+            f"Agar aap chart par *Smart Money footprints* samajhna chahte hain aur saath mein *SMC AI & Algo Helper Tools* dekhna chahte hain jo trade setup samajhne mein kaam aate hain, toh *{topic}* ({class_time}) bilkul *FREE* hai.\n"
             f"{link_block}"
             f"Kya main aapki seat reserve kar doon? Bas *YES* likh kar bhejein."
         ),
         "Call Cut (Short Value Hook)": (
             f"Hi *{lead_name}* ji, abhi *{brand_name}* se call connect hua tha par shayad network ki wajah se cut ho gaya.\n\n"
-            f"Bas 10 second ki update: *{topic}* ({class_time}) mein hum *live market structure aur operator footprints* samjha rahe hain — *100% Free Educational Session*.\n"
+            f"Bas 10 second ki update: *{topic}* ({class_time}) mein hum *SMC AI tools + live market structure* dikha rahe hain taaki aapko trade samajhne mein aasani ho — *100% Free Educational Session*.\n"
             f"{link_block}"
             f"Details chahiye toh *YES* reply karein 👍"
         ),
         "Busy (Quick Evening Reminder Hook)": (
             f"Koi baat nahi *{lead_name}* ji, abhi aap busy honge 👍\n\n"
-            f"Bas itna share karna tha — *{brand_name}* ki *{topic}* ({class_time}) bilkul *FREE* hai, jismein aap *support-resistance se aage badh kar real institutional price action* seekhenge.\n"
+            f"Bas itna share karna tha — *{brand_name}* ki *{topic}* ({class_time}) bilkul *FREE* hai, jismein aapko *SMC AI & algo signal tools* aur *price action logic* ka clear breakdown milega.\n"
             f"{link_block}"
             f"Free hote hi *YES* reply kar dijiyega, main reminder bhej dunga."
         ),
         "Doubt: Is This Really Free? (Zero-Risk Hook)": (
             f"Bilkul *{lead_name}* ji — yeh *{topic}* *100% FREE* hai, koi hidden fee ya paid tip group nahi hai.\n\n"
-            f"*{brand_name}* ka aim simple hai: pehle aap live chart par *real price action logic* dekhein aur khud decide karein ki market kaise kaam karta hai.\n"
+            f"*{brand_name}* ka aim simple hai: pehle aap live dekhein ki *SMC AI & algo tools* kaise chart aur trade setups ko samajhne mein help karte hain — phir khud decide karein.\n"
             f"{link_block}"
             f"Aaj ({class_time}) join karne ke liye *YES* reply karein."
         ),
         "Not Interested (Polite Door-Open Close)": (
             f"Thank you *{lead_name}* ji aapke samay ke liye 🙏\n"
-            f"Agar future mein kabhi *free stock market chart reading aur price action* seekhne ka mann bane, toh *{brand_name}* par zaroor message kijiyega. Have a great day!"
+            f"Agar future mein kabhi *SMC AI tools, algo chart logic aur free stock market learning* try karne ka mann bane, toh *{brand_name}* par zaroor message kijiyega. Have a great day!"
         ),
     }
 
     call_scripts = {
         "Opening (First 20 Seconds)": (
-            f"\"Hello {lead_name} ji, namaste! Main {brand_name} se bol raha hoon. Aapne stock market learning ke liye enquiry ki thi — "
-            f"aaj hum *{topic}* kara rahe hain jismein live chart par dikhayenge ki big players kaise move karte hain. Bilkul free educational class hai — kya aap 30 second baat kar sakte hain?\""
+            f"\"Hello {lead_name} ji, namaste! Main {brand_name} se bol raha hoon. Aapne market learning ke liye enquiry ki thi — "
+            f"aaj hum *{topic}* kara rahe hain jismein live chart aur *SMC AI & algo helper tools* dikhayenge jo trade samajhne ya confusion door karne mein kaam aate hain. Bilkul free educational session hai — kya aap 30 second baat kar sakte hain?\""
         ),
         "If Asked: 'I Don't Know Anything About This'": (
-            f"\"Bilkul koi dikkat nahi {lead_name} ji, yeh session zero se shuru karne walon ke liye hi design kiya gaya hai — bilkul simple Hindi mein. "
+            f"\"Bilkul koi dikkat nahi {lead_name} ji, yeh session beginners ke liye hi hai — bilkul simple Hindi mein. Aur hamare *SMC AI & algo tools* chart par key levels samajhne mein kaafi madad karte hain. "
             f"Main aapko {brand_name} se WhatsApp par short detail bhej deta hoon, pehle wahan dekh lijiyega.\""
         ),
         "If Asked: 'Will There Be Any Fees?'": (
-            f"\"Nahi {lead_name} ji, yeh *{topic}* 100% free educational session hai, koi tip ya charge nahi hai. Main abhi aapko WhatsApp par exact details bhej raha hoon, aap khud check kar lijiyega.\""
+            f"\"Nahi {lead_name} ji, yeh *{topic}* 100% free educational session hai, koi tip ya zor-zabardasti nahi hai, aur session mein *SMC AI & algo tool* ka demo/overview bhi share kiya jayega. Main abhi aapko WhatsApp par details bhej raha hoon.\""
         ),
         "Closing / WhatsApp Push": (
-            f"\"Great {lead_name} ji! Main abhi aapko {brand_name} se WhatsApp par {class_time} ki detail{link_line_call} bhej raha hoon — wahan 'YES' reply kar dijiyega taaki aapki seat lock ho jaye.\""
+            f"\"Great {lead_name} ji! Main abhi aapko {brand_name} se WhatsApp par {class_time} aur *SMC AI / Algo* session ki detail{link_line_call} bhej raha hoon — wahan 'YES' reply kar dijiyega taaki aapki seat lock ho jaye.\""
         ),
     }
 
@@ -1194,7 +1194,6 @@ else:
         int_count = sum(1 for r in sheet_rows if r["disposition"] == "Interested")
         fu_exact_count = sum(1 for r in sheet_rows if r["disposition"] == "Follow-Up")
         not_int_count = sum(1 for r in sheet_rows if r["disposition"] == "Not Interested")
-        pending_retry_count = sum(1 for r in sheet_rows if r["disposition"] in FOLLOW_UP_STATUSES)
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Logged", len(sheet_rows))
