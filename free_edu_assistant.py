@@ -22,6 +22,13 @@ FAST_SKIP_THRESHOLD_SEC = 5.0  # Agar 5 second se kam mein lead save ho toh Fast
 FRESH_START_FROM_ZERO = False  # Session reset hone par local backup se progress restore hoga
 
 
+def get_admin_token(pin_val: str) -> str:
+    return hashlib.sha256(f"market_metrix_admin::{pin_val}".encode("utf-8")).hexdigest()[:16]
+
+
+ADMIN_TOKEN = get_admin_token(ADMIN_PIN)
+
+
 def get_default_webhook_url() -> str:
     try:
         secret_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
@@ -542,6 +549,10 @@ qp_cid = str(qp.get("cid", "")).strip().upper()
 qp_cpin = str(qp.get("cpin", "")).strip()
 qp_act = str(qp.get("act", "")).strip()
 qp_act_idx = str(qp.get("act_idx", "")).strip()
+qp_admin_tok = str(qp.get("admin_tok", "")).strip()
+
+if qp_admin_tok and qp_admin_tok == ADMIN_TOKEN:
+    st.session_state["admin_unlocked"] = True
 
 if qp_slot in caller_auth_map and qp_cid and qp_cpin:
     expected_qp = caller_auth_map[qp_slot]
@@ -589,7 +600,9 @@ with st.sidebar:
         st.query_params["cpin"] = entered_caller_pin.strip()
 
         if st.button("🚪 Logout Caller", use_container_width=True, key="caller_logout_btn"):
-            st.query_params.clear()
+            st.query_params.pop("slot", None)
+            st.query_params.pop("cid", None)
+            st.query_params.pop("cpin", None)
             st.session_state.pop("active_slot", None)
             st.session_state.pop(f"cid_input_{selected_preset}", None)
             st.session_state.pop(f"cpin_input_{selected_preset}", None)
@@ -625,18 +638,32 @@ with st.sidebar:
 
     st.divider()
     st.header("3. Admin Access")
-    admin_pin_input = st.text_input("Admin PIN", type="password", placeholder="Enter Admin PIN", key="admin_pin_box")
-    is_admin_verified = admin_pin_input.strip() == ADMIN_PIN
+    if not st.session_state.get("admin_unlocked", False):
+        admin_pin_input = st.text_input("Admin PIN", type="password", placeholder="Enter Admin PIN", key="admin_pin_box")
+        if admin_pin_input.strip() == ADMIN_PIN:
+            st.session_state["admin_unlocked"] = True
+            st.query_params["admin_tok"] = ADMIN_TOKEN
+            st.rerun()
+        elif admin_pin_input.strip():
+            st.caption("Invalid Admin PIN.")
+    else:
+        st.query_params["admin_tok"] = ADMIN_TOKEN
+
+    is_admin_verified = bool(st.session_state.get("admin_unlocked", False))
 
     if is_admin_verified:
-        st.success("Admin access granted.")
+        st.success("Admin access unlocked (persists on refresh).")
+        if st.button("🔒 Lock Admin", use_container_width=True, key="admin_lock_btn"):
+            st.session_state["admin_unlocked"] = False
+            st.query_params.pop("admin_tok", None)
+            st.rerun()
 
         if st.button("🗑️ Reset All Callers Data to 0", use_container_width=True, key="admin_zero_all_btn"):
             reset_all_callers_to_zero(slot_names)
             st.success("All callers data reset to 0.")
             st.rerun()
 
-        with st.expander("🔑 Manage Caller ID & PIN", expanded=True):
+        with st.expander("🔑 Manage Caller ID & PIN", expanded=False):
             manage_slot = st.selectbox(
                 "Select Caller Slot",
                 slot_names,
@@ -668,9 +695,9 @@ with st.sidebar:
             ]
             st.dataframe(creds_table, use_container_width=True, hide_index=True)
 
-        with st.expander("5 Caller Lead Assign"):
+        with st.expander("✂️ Bulk Split Leads to 5 Callers", expanded=False):
             bulk_raw_text = st.text_area(
-                "Bulk Split Leads Equally Across All 5 Callers (One per line: Name, Phone)",
+                "Paste Leads to Split Equally Across All 5 Callers (One per line: Name, Phone)",
                 placeholder="Paste 100 or 150 leads here to split equally across Caller 1 to Caller 5...",
                 height=110,
                 key="admin_bulk_split_box",
@@ -697,56 +724,6 @@ with st.sidebar:
                     st.rerun()
                 else:
                     st.warning("Paste valid leads first to split.")
-
-            st.divider()
-            admin_target_caller = st.selectbox(
-                "Select Target Caller",
-                slot_names,
-                key="admin_target_caller_select",
-            )
-            t_slug = safe_caller_slug(admin_target_caller)
-            if t_slug not in st.session_state.verified_profiles:
-                st.session_state.verified_profiles[t_slug] = (
-                    load_caller_backup(admin_target_caller) or empty_profile("")
-                )
-            t_profile = st.session_state.verified_profiles[t_slug]
-
-            admin_uploaded = st.file_uploader(
-                f"Upload CSV / TXT for {admin_target_caller}",
-                type=["csv", "txt"],
-                key=f"admin_upload_{t_slug}_v{t_profile.get('batch_version', 0)}",
-            )
-            if admin_uploaded is not None:
-                parsed_up = parse_uploaded_leads_file(admin_uploaded)
-                if parsed_up and parsed_up != t_profile.get("raw_leads", ""):
-                    t_profile["raw_leads"] = parsed_up
-                    t_profile["master_leads"] = parsed_up
-                    t_profile["in_followup_queue"] = False
-                    t_profile["lead_idx"] = 0
-                    t_profile["lead_opened_at"] = time.time()
-                    t_profile["batch_version"] = int(t_profile.get("batch_version", 0)) + 1
-                    save_caller_backup(admin_target_caller, t_profile)
-                    st.success(f"Uploaded leads saved for {admin_target_caller}.")
-                    st.rerun()
-
-            admin_leads_text = st.text_area(
-                f"Paste Leads for {admin_target_caller} (One per line: Name, Phone)",
-                value=t_profile.get("raw_leads", ""),
-                height=130,
-                key=f"admin_paste_{t_slug}_v{t_profile.get('batch_version', 0)}",
-            )
-            if st.button(f"Assign {admin_target_caller} Leads", use_container_width=True, key=f"admin_save_{t_slug}"):
-                t_profile["raw_leads"] = admin_leads_text
-                t_profile["master_leads"] = admin_leads_text
-                t_profile["in_followup_queue"] = False
-                t_profile["lead_idx"] = 0
-                t_profile["lead_opened_at"] = time.time()
-                t_profile["batch_version"] = int(t_profile.get("batch_version", 0)) + 1
-                save_caller_backup(admin_target_caller, t_profile)
-                st.success(f"Leads assigned to {admin_target_caller}.")
-                st.rerun()
-    elif admin_pin_input.strip():
-        st.caption("Invalid Admin PIN.")
 
 if not is_caller_verified:
     st.warning(
@@ -973,7 +950,7 @@ else:
         if live_elapsed_sec < FAST_SKIP_THRESHOLD_SEC:
             st.caption(f"⚡ Speed Audit: Lead opened {live_elapsed_sec}s ago (saving under {FAST_SKIP_THRESHOLD_SEC:.0f}s flags as Fast Skip).")
         if not has_performed_action:
-            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Dial** / **✅ Call Done** ya **📲 Open WhatsApp** / **✅ Mark WA Sent** par click karein.")
+            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Dial** / **✅ Call Done** ya **📲 Open WA** / **✅ Mark WA Sent** par click karein.")
         else:
             st.success(f"✅ **Action Verified:** `{format_action_label(current_action_state)}` — ab aap disposition save kar sakte hain.")
 
@@ -1131,47 +1108,57 @@ else:
 
         if len(formatted_num) >= 10:
             encoded_msg = urllib.parse.quote(selected_wa_text)
-            wa_url = f"https://wa.me/{formatted_num}?text={encoded_msg}"
+            wa_url = f"https://web.whatsapp.com/send?phone={formatted_num}&text={encoded_msg}"
             js_msg = json.dumps(selected_wa_text)
             js_wa_url = json.dumps(wa_url)
             components.html(
                 f"""
-                <div style="display:flex; gap:8px; margin-top:4px; font-family:sans-serif;">
-                    <button id="copyBtn_{current_slug}_{profile['lead_idx']}" onclick="copyWaMsg()" style="
+                <div style="display:flex; gap:8px; margin-top:2px; font-family:sans-serif;">
+                    <button id="copyBtn_{current_slug}_{profile['lead_idx']}" type="button" onclick="copyWaMsg()" style="
                         flex:1; background:#334155; color:#fff; border:none; border-radius:8px;
                         padding:10px 12px; font-weight:600; cursor:pointer;
                     ">📋 Copy Text</button>
-                    <a href={js_wa_url} target="market_metrix_wa" rel="noopener" style="
-                        flex:1.6; text-align:center; background:#2563eb; color:#fff; border-radius:8px;
-                        padding:10px 12px; font-weight:600; text-decoration:none;
-                    ">📲 Open WA ({display_num})</a>
+                    <button type="button" onclick="openSameWaTab()" style="
+                        flex:1.6; background:#2563eb; color:#fff; border:none; border-radius:8px;
+                        padding:10px 12px; font-weight:600; cursor:pointer;
+                    ">📲 Open WA ({display_num})</button>
                 </div>
                 <script>
+                function openSameWaTab() {{
+                    const targetUrl = {js_wa_url};
+                    const win = window.open(targetUrl, "market_metrix_wa");
+                    if (win) {{
+                        try {{ win.focus(); }} catch (e) {{}}
+                    }}
+                }}
                 function copyWaMsg() {{
                     const txt = {js_msg};
                     const btn = document.getElementById("copyBtn_{current_slug}_{profile['lead_idx']}");
-                    if (navigator.clipboard && navigator.clipboard.writeText) {{
-                        navigator.clipboard.writeText(txt).then(() => {{
-                            btn.innerText = "✅ Copied!";
-                            setTimeout(() => btn.innerText = "📋 Copy Text", 1500);
-                        }}).catch(() => fallbackCopy(txt, btn));
+                    const markCopied = () => {{
+                        btn.innerText = "✅ Copied!";
+                        setTimeout(() => btn.innerText = "📋 Copy Text", 1500);
+                    }};
+                    if (navigator.clipboard && window.isSecureContext) {{
+                        navigator.clipboard.writeText(txt).then(markCopied).catch(() => fallbackCopy(txt, btn, markCopied));
                     }} else {{
-                        fallbackCopy(txt, btn);
+                        fallbackCopy(txt, btn, markCopied);
                     }}
                 }}
-                function fallbackCopy(txt, btn) {{
+                function fallbackCopy(txt, btn, doneCb) {{
                     const ta = document.createElement("textarea");
                     ta.value = txt;
+                    ta.style.position = "fixed";
+                    ta.style.opacity = "0";
                     document.body.appendChild(ta);
+                    ta.focus();
                     ta.select();
-                    document.execCommand("copy");
+                    try {{ document.execCommand("copy"); }} catch (e) {{}}
                     document.body.removeChild(ta);
-                    btn.innerText = "✅ Copied!";
-                    setTimeout(() => btn.innerText = "📋 Copy Text", 1500);
+                    doneCb();
                 }}
                 </script>
                 """,
-                height=52,
+                height=54,
             )
             if st.button(
                 "✅ Mark WA Sent",
@@ -1309,23 +1296,32 @@ else:
 
 if is_admin_verified:
     st.divider()
-    st.subheader("👀 5. Admin Live Team Monitor & Quality Audit")
+    st.subheader("👀 5. Admin All Callers Board, Live Monitor & Quality Audit")
 
     total_team_interested = 0
     total_team_followup = 0
     total_team_not_int = 0
     total_team_logged = 0
+    total_team_unsynced = 0
 
     local_team_rows = []
+    all_caller_profiles = {}
     for c_name, auth_info in caller_auth_map.items():
         c_slug = safe_caller_slug(c_name)
         prof = st.session_state.verified_profiles.get(c_slug) or load_caller_backup(c_name)
+        if prof:
+            st.session_state.verified_profiles[c_slug] = prof
+        all_caller_profiles[c_name] = prof
+
         if prof:
             p_leads = parse_leads_text(prof.get("raw_leads", ""))
             p_total = len(p_leads)
             p_idx = min(prof.get("lead_idx", 0), max(p_total - 1, 0)) if p_total > 0 else 0
             curr_lbl = f"#{p_idx + 1} - {p_leads[p_idx]['name']}" if p_total > 0 else "No Batch"
             disp_map = prof.get("disposition_sheet", {})
+            synced_set = prof.get("synced_indices", set())
+            unsynced_cnt = sum(1 for k in disp_map.keys() if k not in synced_set)
+            total_team_unsynced += unsynced_cnt
             records = list(disp_map.values())
 
             c_int = sum(1 for r in records if r.get("disposition") == "Interested")
@@ -1360,6 +1356,7 @@ if is_admin_verified:
                 "💬 WAs": c_wa_cnt,
                 "⏱️ Avg Time": avg_sec,
                 "⚠️ Fast Skips (<5s)": fast_skips,
+                "☁️ Pending Sync": unsynced_cnt,
                 "Current Lead": curr_lbl,
                 "Last Status": last_rec["disposition"] if last_rec else "—",
             })
@@ -1376,6 +1373,7 @@ if is_admin_verified:
                 "💬 WAs": 0,
                 "⏱️ Avg Time": "0s",
                 "⚠️ Fast Skips (<5s)": 0,
+                "☁️ Pending Sync": 0,
                 "Current Lead": "0",
                 "Last Status": "0",
             })
@@ -1387,6 +1385,88 @@ if is_admin_verified:
     tm4.metric("❌ Team Not Interested", total_team_not_int)
 
     st.dataframe(local_team_rows, use_container_width=True, hide_index=True)
+
+    if st.button(
+        f"☁️ Sync All Callers Unsynced Rows Now ({total_team_unsynced} pending)",
+        use_container_width=True,
+        disabled=not gsheet_webhook.strip() or total_team_unsynced == 0,
+        key="admin_sync_all_callers_btn",
+    ):
+        batch_rows_to_push = []
+        per_caller_keys = {}
+        for c_name in slot_names:
+            c_prof = all_caller_profiles.get(c_name)
+            if not c_prof:
+                continue
+            d_map = c_prof.get("disposition_sheet", {})
+            s_set = c_prof.get("synced_indices", set())
+            u_keys = [k for k in sorted(d_map.keys()) if k not in s_set]
+            if u_keys:
+                per_caller_keys[c_name] = u_keys
+                for k in u_keys:
+                    batch_rows_to_push.append(d_map[k])
+        if batch_rows_to_push:
+            try:
+                status_code, _ = push_to_google_sheet(gsheet_webhook, batch_rows_to_push)
+                if 200 <= status_code < 300:
+                    for c_name, u_keys in per_caller_keys.items():
+                        c_prof = all_caller_profiles[c_name]
+                        c_prof["synced_indices"].update(u_keys)
+                        save_caller_backup(c_name, c_prof)
+                    st.success(f"{len(batch_rows_to_push)} unsynced rows across all callers pushed to Google Sheet.")
+                    st.rerun()
+                else:
+                    st.error(f"Google Sheet response status: {status_code}")
+            except Exception as e:
+                st.error(f"Bulk sync error: {e}")
+
+    st.markdown("### 📋 All Callers Lead Boxes (Ek Saath View & Assign)")
+    edited_all_boxes = {}
+    for row_start in range(0, len(slot_names), 2):
+        row_slots = slot_names[row_start:row_start + 2]
+        grid_cols = st.columns(len(row_slots))
+        for g_idx, c_slot in enumerate(row_slots):
+            c_slug = safe_caller_slug(c_slot)
+            c_prof = all_caller_profiles.get(c_slot) or empty_profile("")
+            st.session_state.verified_profiles[c_slug] = c_prof
+            c_ver = int(c_prof.get("batch_version", 0))
+            c_leads_cnt = len(parse_leads_text(c_prof.get("raw_leads", "")))
+            c_done_cnt = len(c_prof.get("done_indices", set()))
+
+            with grid_cols[g_idx]:
+                st.markdown(f"**{c_slot} (`{caller_auth_map[c_slot]['id']}`)** — Done: `{c_done_cnt}/{c_leads_cnt}`")
+                box_val = st.text_area(
+                    f"Leads — {c_slot}",
+                    value=c_prof.get("raw_leads", ""),
+                    height=115,
+                    label_visibility="collapsed",
+                    key=f"all_admin_box_{c_slug}_v{c_ver}",
+                )
+                edited_all_boxes[c_slot] = box_val
+                if st.button(f"💾 Save {c_slot}", use_container_width=True, key=f"save_all_box_{c_slug}"):
+                    c_prof["raw_leads"] = box_val
+                    c_prof["master_leads"] = box_val
+                    c_prof["in_followup_queue"] = False
+                    c_prof["lead_idx"] = 0
+                    c_prof["lead_opened_at"] = time.time()
+                    c_prof["batch_version"] = c_ver + 1
+                    save_caller_backup(c_slot, c_prof)
+                    st.success(f"{c_slot} leads updated.")
+                    st.rerun()
+
+    if st.button("💾 Save All 5 Callers Leads Together", type="primary", use_container_width=True, key="save_all_5_together_btn"):
+        for c_slot, box_val in edited_all_boxes.items():
+            c_slug = safe_caller_slug(c_slot)
+            c_prof = st.session_state.verified_profiles[c_slug]
+            c_prof["raw_leads"] = box_val
+            c_prof["master_leads"] = box_val
+            c_prof["in_followup_queue"] = False
+            c_prof["lead_idx"] = 0
+            c_prof["lead_opened_at"] = time.time()
+            c_prof["batch_version"] = int(c_prof.get("batch_version", 0)) + 1
+            save_caller_backup(c_slot, c_prof)
+        st.success("All 5 callers leads saved together.")
+        st.rerun()
 
     if st.button(
         "🔄 Refresh All Callers Live Data from Google Sheet",
