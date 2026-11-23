@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Market Metrix — Smart Calling & WA Helper", layout="wide")
 
 st.title("📈 Market Metrix — Lead Classifier, Calling & WA Helper")
-st.caption("Fast multi-caller lead dialer, mandatory Call/WA action lock, live timer & speed audit, and Admin live monitor.")
+st.caption("Fast multi-caller lead dialer, cross-caller duplicate guard, live timer & speed audit, and Admin live monitor.")
 
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
@@ -75,6 +75,8 @@ FOLLOW_UP_STATUSES = {
     "Call Cut",
     "Busy",
 }
+
+WARM_AND_HOT_STATUSES = {"Interested"} | FOLLOW_UP_STATUSES
 
 DISPOSITION_TO_WA_KEY = {
     "Interested": "Interested (Seat Confirmation & Hook)",
@@ -443,6 +445,27 @@ def load_caller_backup(caller_name: str):
         }
     except Exception:
         return None
+
+
+def find_cross_caller_history(phone_val: str, current_caller: str, slot_list: list):
+    target_norm = clean_phone(phone_val)
+    if len(target_norm) < 10:
+        return None
+    for slot_name in slot_list:
+        if slot_name == current_caller:
+            continue
+        c_slug = safe_caller_slug(slot_name)
+        prof = st.session_state.verified_profiles.get(c_slug) or load_caller_backup(slot_name)
+        if not prof:
+            continue
+        for rec in prof.get("disposition_sheet", {}).values():
+            if clean_phone(rec.get("phone", "")) == target_norm:
+                return {
+                    "caller": slot_name,
+                    "disposition": rec.get("disposition", "Logged"),
+                    "note": rec.get("note", ""),
+                }
+    return None
 
 
 def reset_all_callers_to_zero(slot_list: list):
@@ -816,6 +839,13 @@ else:
             text=f"[{caller_name} | {expected_auth['id']}{mode_tag}] Completed: {done_count} / {total_leads} leads | Current: #{profile['lead_idx'] + 1} | Timer: {live_elapsed_sec}s | Fast Skips: {caller_fast_skips}",
         )
 
+    dup_hit = find_cross_caller_history(default_phone, caller_name, slot_names)
+    if dup_hit:
+        note_str = f" — Note: '{dup_hit['note']}'" if dup_hit.get("note") else ""
+        st.warning(
+            f"⚠️ **Cross-Caller Alert:** Yeh number pehle **{dup_hit['caller']}** ne handle kiya tha (`{dup_hit['disposition']}`{note_str})."
+        )
+
     current_action_state = get_action_status(profile, profile["lead_idx"])
     has_performed_action = bool(current_action_state.get("call") or current_action_state.get("wa"))
 
@@ -1118,13 +1148,14 @@ else:
                         flex:1; background:#334155; color:#fff; border:none; border-radius:8px;
                         padding:10px 12px; font-weight:600; cursor:pointer;
                     ">📋 Copy Text</button>
-                    <button type="button" onclick="openSameWaTab()" style="
-                        flex:1.6; background:#2563eb; color:#fff; border:none; border-radius:8px;
+                    <button type="button" onclick="copyAndOpenSameWaTab()" style="
+                        flex:1.7; background:#2563eb; color:#fff; border:none; border-radius:8px;
                         padding:10px 12px; font-weight:600; cursor:pointer;
-                    ">📲 Open WA ({display_num})</button>
+                    ">📲 Copy & Open WA ({display_num})</button>
                 </div>
                 <script>
-                function openSameWaTab() {{
+                function copyAndOpenSameWaTab() {{
+                    copyWaMsg();
                     const targetUrl = {js_wa_url};
                     const win = window.open(targetUrl, "market_metrix_wa");
                     if (win) {{
@@ -1306,6 +1337,7 @@ if is_admin_verified:
 
     local_team_rows = []
     all_caller_profiles = {}
+    all_combined_records = []
     for c_name, auth_info in caller_auth_map.items():
         c_slug = safe_caller_slug(c_name)
         prof = st.session_state.verified_profiles.get(c_slug) or load_caller_backup(c_name)
@@ -1322,7 +1354,8 @@ if is_admin_verified:
             synced_set = prof.get("synced_indices", set())
             unsynced_cnt = sum(1 for k in disp_map.keys() if k not in synced_set)
             total_team_unsynced += unsynced_cnt
-            records = list(disp_map.values())
+            records = [disp_map[k] for k in sorted(disp_map.keys())]
+            all_combined_records.extend(records)
 
             c_int = sum(1 for r in records if r.get("disposition") == "Interested")
             c_fu = sum(1 for r in records if r.get("disposition") == "Follow-Up")
@@ -1386,39 +1419,64 @@ if is_admin_verified:
 
     st.dataframe(local_team_rows, use_container_width=True, hide_index=True)
 
-    if st.button(
-        f"☁️ Sync All Callers Unsynced Rows Now ({total_team_unsynced} pending)",
-        use_container_width=True,
-        disabled=not gsheet_webhook.strip() or total_team_unsynced == 0,
-        key="admin_sync_all_callers_btn",
-    ):
-        batch_rows_to_push = []
-        per_caller_keys = {}
-        for c_name in slot_names:
-            c_prof = all_caller_profiles.get(c_name)
-            if not c_prof:
-                continue
-            d_map = c_prof.get("disposition_sheet", {})
-            s_set = c_prof.get("synced_indices", set())
-            u_keys = [k for k in sorted(d_map.keys()) if k not in s_set]
-            if u_keys:
-                per_caller_keys[c_name] = u_keys
-                for k in u_keys:
-                    batch_rows_to_push.append(d_map[k])
-        if batch_rows_to_push:
-            try:
-                status_code, _ = push_to_google_sheet(gsheet_webhook, batch_rows_to_push)
-                if 200 <= status_code < 300:
-                    for c_name, u_keys in per_caller_keys.items():
-                        c_prof = all_caller_profiles[c_name]
-                        c_prof["synced_indices"].update(u_keys)
-                        save_caller_backup(c_name, c_prof)
-                    st.success(f"{len(batch_rows_to_push)} unsynced rows across all callers pushed to Google Sheet.")
-                    st.rerun()
-                else:
-                    st.error(f"Google Sheet response status: {status_code}")
-            except Exception as e:
-                st.error(f"Bulk sync error: {e}")
+    warm_hot_records = [r for r in all_combined_records if r.get("disposition") in WARM_AND_HOT_STATUSES]
+    exp_col1, exp_col2, exp_col3 = st.columns(3)
+    with exp_col1:
+        if st.button(
+            f"☁️ Sync All Unsynced ({total_team_unsynced})",
+            use_container_width=True,
+            disabled=not gsheet_webhook.strip() or total_team_unsynced == 0,
+            key="admin_sync_all_callers_btn",
+        ):
+            batch_rows_to_push = []
+            per_caller_keys = {}
+            for c_name in slot_names:
+                c_prof = all_caller_profiles.get(c_name)
+                if not c_prof:
+                    continue
+                d_map = c_prof.get("disposition_sheet", {})
+                s_set = c_prof.get("synced_indices", set())
+                u_keys = [k for k in sorted(d_map.keys()) if k not in s_set]
+                if u_keys:
+                    per_caller_keys[c_name] = u_keys
+                    for k in u_keys:
+                        batch_rows_to_push.append(d_map[k])
+            if batch_rows_to_push:
+                try:
+                    status_code, _ = push_to_google_sheet(gsheet_webhook, batch_rows_to_push)
+                    if 200 <= status_code < 300:
+                        for c_name, u_keys in per_caller_keys.items():
+                            c_prof = all_caller_profiles[c_name]
+                            c_prof["synced_indices"].update(u_keys)
+                            save_caller_backup(c_name, c_prof)
+                        st.success(f"{len(batch_rows_to_push)} rows pushed to Google Sheet.")
+                        st.rerun()
+                    else:
+                        st.error(f"Google Sheet response status: {status_code}")
+                except Exception as e:
+                    st.error(f"Bulk sync error: {e}")
+
+    with exp_col2:
+        st.download_button(
+            label=f"⬇️ Combined Team CSV ({len(all_combined_records)})",
+            data=build_csv(all_combined_records),
+            file_name=f"team_combined_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            disabled=len(all_combined_records) == 0,
+            key="dl_team_combined_csv",
+        )
+
+    with exp_col3:
+        st.download_button(
+            label=f"🔥 Hot & Follow-Up CSV ({len(warm_hot_records)})",
+            data=build_csv(warm_hot_records),
+            file_name=f"hot_followup_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            disabled=len(warm_hot_records) == 0,
+            key="dl_warm_hot_csv",
+        )
 
     st.markdown("### 📋 All Callers Lead Boxes (Ek Saath View & Assign)")
     edited_all_boxes = {}
