@@ -19,7 +19,7 @@ st.caption("Fast multi-caller lead dialer, mandatory Call/WA action lock, live t
 ADMIN_PIN = "1234"  # Deploy karne se pehle apna secret Admin PIN set kar lena
 AUTH_CONFIG_FILE = "caller_auth_config.json"
 FAST_SKIP_THRESHOLD_SEC = 5.0  # Agar 5 second se kam mein lead save ho toh Fast Skip flag hoga
-FRESH_START_FROM_ZERO = True  # Naye deploy/run par purana local JSON caller data load na ho, 0 se start ho
+FRESH_START_FROM_ZERO = False  # Session reset hone par local backup se progress restore hoga
 
 
 def get_default_webhook_url() -> str:
@@ -612,7 +612,7 @@ with st.sidebar:
 
     st.divider()
     st.header("2. Auto-Refresh & Google Sheet Sync")
-    auto_refresh_enabled = st.checkbox("Auto-Refresh (1.5s)", value=True)
+    auto_refresh_enabled = st.checkbox("Auto-Refresh (1.5s)", value=False)
     gsheet_webhook = st.text_input(
         "Apps Script Web App URL",
         value=DEFAULT_GSHEET_WEBHOOK,
@@ -966,14 +966,14 @@ else:
             "Call Disposition",
             options=DISPOSITION_OPTIONS,
             index=DISPOSITION_OPTIONS.index(effective_disp) if effective_disp in DISPOSITION_OPTIONS else 0,
-            key=f"disp_{current_slug}_v{batch_ver}_{profile['lead_idx']}_{effective_disp}",
+            key=f"disp_{current_slug}_v{batch_ver}_{profile['lead_idx']}",
         )
 
     if total_leads > 0:
         if live_elapsed_sec < FAST_SKIP_THRESHOLD_SEC:
             st.caption(f"⚡ Speed Audit: Lead opened {live_elapsed_sec}s ago (saving under {FAST_SKIP_THRESHOLD_SEC:.0f}s flags as Fast Skip).")
         if not has_performed_action:
-            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Dial** / **✅ Call Done** ya **📲 Open WhatsApp** / **✅ WA Sent** par click karein.")
+            st.warning("🔒 **Action Required:** Save & Next ya Quick Disposition dabane se pehle neeche **📞 Dial** / **✅ Call Done** ya **📲 Open WhatsApp** / **✅ Mark WA Sent** par click karein.")
         else:
             st.success(f"✅ **Action Verified:** `{format_action_label(current_action_state)}` — ab aap disposition save kar sakte hain.")
 
@@ -1203,7 +1203,7 @@ else:
             with call_col_a:
                 st.markdown(
                     f"""
-                    <a href="{tel_url}" target="_top" style="
+                    <a href="{tel_url}" target="_blank" rel="noopener" style="
                         display: inline-block;
                         width: 100%;
                         text-align: center;
@@ -1415,7 +1415,7 @@ if is_admin_verified:
             key="dl_all_callers_remote_csv",
         )
 
-# 1.5s background auto-refresh loop (non-blocking)
+# Optional 1.5s background auto-refresh loop (off by default to protect typing & actions)
 if auto_refresh_enabled:
     now_ts = time.time()
     last_tick = st.session_state.get("_last_auto_refresh_ts", 0.0)
